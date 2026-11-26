@@ -5,6 +5,11 @@ async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("""
+        CREATE TABLE IF NOT EXISTS product_prices (
+            product_code TEXT PRIMARY KEY,
+            price INTEGER NOT NULL
+        )""")
+        await db.execute("""
         CREATE TABLE IF NOT EXISTS customers (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
@@ -190,4 +195,21 @@ async def save_support_message(user_id, message, direction, admin_id=None):
         INSERT INTO support_messages(user_id,admin_id,message,direction)
         VALUES(?,?,?,?)
         """, (user_id, admin_id, message, direction))
+        await db.commit()
+
+
+async def init_product_prices(products):
+    async with aiosqlite.connect(DB_PATH) as db:
+        for code, product in products.items():
+            await db.execute("INSERT OR IGNORE INTO product_prices(product_code, price) VALUES(?, ?)", (code, int(product["price"])))
+        await db.commit()
+
+async def get_product_prices():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT product_code, price FROM product_prices")
+        return {code: price for code, price in await cur.fetchall()}
+
+async def set_product_price(product_code, price):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT INTO product_prices(product_code, price) VALUES(?, ?) ON CONFLICT(product_code) DO UPDATE SET price=excluded.price", (product_code, int(price)))
         await db.commit()
