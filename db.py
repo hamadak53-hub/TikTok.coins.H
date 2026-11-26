@@ -4,7 +4,6 @@ from config import DB_PATH
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
-
         await db.execute("""
             CREATE TABLE IF NOT EXISTS orders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,7 +49,6 @@ async def init_db():
             SELECT user_id, username FROM orders
         """)
 
-        # الحسابات المعروضة للبيع
         await db.execute("""
             CREATE TABLE IF NOT EXISTS account_listings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,7 +62,6 @@ async def init_db():
             )
         """)
 
-        # طلبات شراء الحسابات
         await db.execute("""
             CREATE TABLE IF NOT EXISTS account_requests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,6 +72,17 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (listing_id)
                     REFERENCES account_listings(id)
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS support_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                message TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                admin_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
@@ -114,11 +122,16 @@ async def add_order(
                 coins, stars, price, payment_method,
                 receipt_file_id, payment_status, status
             )
-            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, 'pending', 'pending_payment_review')
+            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, 'pending',
+                    'pending_payment_review')
         """, (
-            user_id, username, tiktok_id,
-            product["code"], product["coins"],
-            product["price"], payment_method,
+            user_id,
+            username,
+            tiktok_id,
+            product["code"],
+            product["coins"],
+            product["price"],
+            payment_method,
             receipt_file_id
         ))
 
@@ -171,10 +184,10 @@ async def update_order_status(order_id, status):
         raise ValueError("Invalid order status")
 
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            UPDATE orders SET status = ?
-            WHERE id = ?
-        """, (status, order_id))
+        await db.execute(
+            "UPDATE orders SET status = ? WHERE id = ?",
+            (status, order_id)
+        )
         await db.commit()
 
 
@@ -183,30 +196,36 @@ async def get_dashboard_stats():
         cur = await db.execute("""
             SELECT
                 COUNT(*),
-                COALESCE(SUM(CASE
-                    WHEN payment_status = 'confirmed'
-                    THEN price ELSE 0 END), 0),
-                COALESCE(SUM(CASE
-                    WHEN payment_status = 'pending'
-                    THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE
-                    WHEN payment_status = 'confirmed'
-                    THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE
-                    WHEN payment_status = 'rejected'
-                    THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE
-                    WHEN status = 'completed'
-                    THEN 1 ELSE 0 END), 0)
+                COALESCE(SUM(
+                    CASE WHEN payment_status = 'confirmed'
+                    THEN price ELSE 0 END
+                ), 0),
+                COALESCE(SUM(
+                    CASE WHEN payment_status = 'pending'
+                    THEN 1 ELSE 0 END
+                ), 0),
+                COALESCE(SUM(
+                    CASE WHEN payment_status = 'confirmed'
+                    THEN 1 ELSE 0 END
+                ), 0),
+                COALESCE(SUM(
+                    CASE WHEN payment_status = 'rejected'
+                    THEN 1 ELSE 0 END
+                ), 0),
+                COALESCE(SUM(
+                    CASE WHEN status = 'completed'
+                    THEN 1 ELSE 0 END
+                ), 0)
             FROM orders
         """)
 
         orders = await cur.fetchone()
 
-        cur = await db.execute(
-            "SELECT COUNT(*) FROM customers"
-        )
+        cur = await db.execute("SELECT COUNT(*) FROM customers")
         customers = (await cur.fetchone())[0]
+
+        cur = await db.execute("SELECT COUNT(*) FROM account_listings")
+        accounts = (await cur.fetchone())[0]
 
         return {
             "orders": orders[0] or 0,
@@ -216,29 +235,28 @@ async def get_dashboard_stats():
             "rejected": orders[4] or 0,
             "completed": orders[5] or 0,
             "customers": customers or 0,
+            "accounts": accounts or 0,
         }
 
 
-async def get_orders(status=None, limit=20):
+async def get_orders(limit=20, status=None):
     async with aiosqlite.connect(DB_PATH) as db:
-        if status:
-            cur = await db.execute("""
-                SELECT id, user_id, username, tiktok_id,
-                       coins, price, payment_method,
-                       payment_status, status, created_at
-                FROM orders
-                WHERE status = ?
-                ORDER BY id DESC LIMIT ?
-            """, (status, limit))
-        else:
-            cur = await db.execute("""
-                SELECT id, user_id, username, tiktok_id,
-                       coins, price, payment_method,
-                       payment_status, status, created_at
-                FROM orders
-                ORDER BY id DESC LIMIT ?
-            """, (limit,))
+        query = """
+            SELECT id, user_id, username, tiktok_id,
+                   coins, price, payment_method,
+                   payment_status, status, created_at
+            FROM orders
+        """
+        params = []
 
+        if status:
+            query += " WHERE payment_status = ?"
+            params.append(status)
+
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+
+        cur = await db.execute(query, params)
         return await cur.fetchall()
 
 
@@ -249,7 +267,8 @@ async def get_order(order_id):
                    product_code, coins, price,
                    payment_method, receipt_file_id,
                    payment_status, status, created_at
-            FROM orders WHERE id = ?
+            FROM orders
+            WHERE id = ?
         """, (order_id,))
 
         return await cur.fetchone()
@@ -279,7 +298,8 @@ async def get_customer_orders(user_id, limit=20):
             SELECT id, coins, price, status, created_at
             FROM orders
             WHERE user_id = ?
-            ORDER BY id DESC LIMIT ?
+            ORDER BY id DESC
+            LIMIT ?
         """, (user_id, limit))
 
         return await cur.fetchall()
@@ -297,7 +317,8 @@ async def latest_orders(limit=20):
             SELECT id, user_id, tiktok_id, coins,
                    price, status, created_at
             FROM orders
-            ORDER BY id DESC LIMIT ?
+            ORDER BY id DESC
+            LIMIT ?
         """, (limit,))
 
         return await cur.fetchall()
@@ -307,7 +328,13 @@ async def latest_orders(limit=20):
 # إدارة الحسابات المعروضة
 # =========================
 
-async def add_account(category, title, description, price, photo_file_id=None):
+async def add_account(
+    category,
+    title,
+    description,
+    price,
+    photo_file_id=None
+):
     if category not in ("pubg", "tiktok"):
         raise ValueError("Invalid account category")
 
@@ -362,16 +389,26 @@ async def get_account(account_id):
         return await cur.fetchone()
 
 
-async def update_account(account_id, title=None, description=None, price=None, photo_file_id=None):
+async def update_account(
+    account_id,
+    title=None,
+    description=None,
+    price=None,
+    photo_file_id=None
+):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("""
             SELECT title, description, price, photo_file_id
-            FROM account_listings WHERE id = ?
+            FROM account_listings
+            WHERE id = ?
         """, (account_id,))
         old = await cur.fetchone()
 
         if not old:
             return False
+
+        if price is not None and int(price) <= 0:
+            raise ValueError("Price must be positive")
 
         await db.execute("""
             UPDATE account_listings
@@ -395,7 +432,8 @@ async def set_account_status(account_id, status):
 
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
-            UPDATE account_listings SET status = ?
+            UPDATE account_listings
+            SET status = ?
             WHERE id = ?
         """, (status, account_id))
         await db.commit()
@@ -403,9 +441,10 @@ async def set_account_status(account_id, status):
 
 async def delete_account(account_id):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            DELETE FROM account_listings WHERE id = ?
-        """, (account_id,))
+        await db.execute(
+            "DELETE FROM account_listings WHERE id = ?",
+            (account_id,)
+        )
         await db.commit()
 
 
@@ -416,7 +455,8 @@ async def delete_account(account_id):
 async def request_account(listing_id, user_id, username=None):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("""
-            SELECT status FROM account_listings
+            SELECT status
+            FROM account_listings
             WHERE id = ?
         """, (listing_id,))
         listing = await cur.fetchone()
@@ -440,7 +480,7 @@ async def request_account(listing_id, user_id, username=None):
         return cur.lastrowid
 
 
-async def get_account_requests(status=None, limit=30):
+async def get_account_requests(limit=30, status=None):
     async with aiosqlite.connect(DB_PATH) as db:
         query = """
             SELECT r.id, r.listing_id, r.user_id, r.username,
@@ -468,8 +508,45 @@ async def update_account_request(request_id, status):
 
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
-            UPDATE account_requests SET status = ?
+            UPDATE account_requests
+            SET status = ?
             WHERE id = ?
         """, (status, request_id))
         await db.commit()
+
+
+# =========================
+# دعم العملاء
+# =========================
+
+async def save_support_message(
+    user_id,
+    message,
+    sender,
+    admin_id=None
+):
+    if sender not in ("customer", "admin"):
+        raise ValueError("Invalid support message sender")
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO support_messages (
+                user_id, message, sender, admin_id
+            )
+            VALUES (?, ?, ?, ?)
+        """, (user_id, message, sender, admin_id))
+        await db.commit()
+
+
+async def get_support_messages(user_id, limit=50):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("""
+            SELECT id, user_id, message, sender, admin_id, created_at
+            FROM support_messages
+            WHERE user_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+        """, (user_id, limit))
+
+        return await cur.fetchall()
         
