@@ -14,7 +14,8 @@ from db import (
     reject_payment, get_orders, get_customers, get_dashboard_stats,
     add_account, get_accounts, get_account, request_account,
     get_account_requests, set_account_status, save_support_message,
-    init_product_prices, get_product_prices, set_product_price
+    init_product_prices, get_product_prices, set_product_price,
+    init_product_statuses, get_product_statuses, set_product_status
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -52,6 +53,7 @@ def admin_keyboard():
          InlineKeyboardButton(text="🎵 TikTok", callback_data="acctadmin:tiktok")],
         [InlineKeyboardButton(text="📨 طلبات الحسابات", callback_data="acctadmin:requests")],
         [InlineKeyboardButton(text="💰 تعديل أسعار الشحن", callback_data="admin:prices")],
+        [InlineKeyboardButton(text="🧰 إدارة المنتجات", callback_data="admin:products")],
         [InlineKeyboardButton(text="📢 رسالة جماعية", callback_data="broadcast")]
     ])
 
@@ -134,7 +136,7 @@ async def on_cancel(c: CallbackQuery):
 async def on_catalog(c: CallbackQuery):
     rows = []
     for p in PRODUCTS.values():
-        if int(p["price"]) <= 0:
+        if int(p["price"]) <= 0 or not PRODUCT_STATUS.get(p["code"], True):
             continue
         rows.append([InlineKeyboardButton(
             text=f'{p["coins"]:,} عملة — {p["price"]} جنيه',
@@ -148,6 +150,8 @@ async def on_catalog(c: CallbackQuery):
 async def on_uc_catalog(c: CallbackQuery):
     rows = []
     for p in UC_PRODUCTS.values():
+        if not PRODUCT_STATUS.get(p["code"], True):
+            continue
         rows.append([InlineKeyboardButton(
             text=f"{p['coins']:,} UC — {p['price']} جنيه",
             callback_data=f"buyuc:{p['code']}")])
@@ -157,7 +161,7 @@ async def on_uc_catalog(c: CallbackQuery):
 
 async def on_buy_uc(c: CallbackQuery):
     code = c.data.split(":", 1)[1]
-    if code not in UC_PRODUCTS:
+    if code not in UC_PRODUCTS or not PRODUCT_STATUS.get(code, True):
         await c.answer("الباقة غير متاحة حالياً.", show_alert=True)
         return
     pending[c.from_user.id] = {"step": "pubg_id", "code": code, "service": "pubg_uc"}
@@ -170,7 +174,7 @@ async def on_buy_uc(c: CallbackQuery):
 
 async def on_buy(c: CallbackQuery):
     code = c.data.split(":", 1)[1]
-    if code not in PRODUCTS or int(PRODUCTS[code]["price"]) <= 0:
+    if code not in PRODUCTS or int(PRODUCTS[code]["price"]) <= 0 or not PRODUCT_STATUS.get(code, True):
         await c.answer("الباقة غير متاحة حالياً.", show_alert=True)
         return
     pending[c.from_user.id] = {"step": "tiktok_id", "code": code}
@@ -239,6 +243,17 @@ async def on_admin(c: CallbackQuery):
     elif section == "customers":
         customers = await get_customers(1000)
         await c.message.answer(f"👥 عدد العملاء المسجلين: {len(customers)}")
+    elif section == "products":
+        rows = []
+        for p in PRODUCTS.values():
+            enabled = PRODUCT_STATUS.get(p["code"], True)
+            label = "🟢 ظاهر" if enabled else "⚫ مخفي"
+            rows.append([InlineKeyboardButton(text=f"{label} | TikTok {p['coins']:,} عملة", callback_data=f"producttoggle:{p['code']}")])
+        for p in UC_PRODUCTS.values():
+            enabled = PRODUCT_STATUS.get(p["code"], True)
+            label = "🟢 ظاهر" if enabled else "⚫ مخفي"
+            rows.append([InlineKeyboardButton(text=f"{label} | PUBG {p['coins']:,} UC", callback_data=f"producttoggle:{p['code']}")])
+        await c.message.answer("🧰 إدارة المنتجات\nاضغط على المنتج لتبديل حالته بين ظاهر ومخفي.\nالإخفاء لا يحذف المنتج أو الطلبات القديمة.", reply_markup=with_cancel(rows))
     elif section == "prices":
         rows = []
         for p in PRODUCTS.values():
@@ -304,6 +319,21 @@ async def on_price(c: CallbackQuery):
     )
     await c.answer()
 
+
+async def on_product_toggle(c: CallbackQuery):
+    if not is_admin(c.from_user.id):
+        await c.answer("غير مسموح لك.", show_alert=True)
+        return
+    code = c.data.split(":", 1)[1]
+    product = PRODUCTS.get(code) or UC_PRODUCTS.get(code)
+    if not product:
+        await c.answer("المنتج غير موجود.", show_alert=True)
+        return
+    enabled = not PRODUCT_STATUS.get(code, True)
+    await set_product_status(code, enabled)
+    PRODUCT_STATUS[code] = enabled
+    await c.answer("تم إظهار المنتج." if enabled else "تم إخفاء المنتج.")
+    await c.message.answer(("🟢 المنتج ظاهر الآن: " if enabled else "⚫ المنتج مخفي الآن: ") + str(product["coins"]) + (" عملة TikTok" if code in PRODUCTS else " UC PUBG"), reply_markup=admin_keyboard())
 
 async def on_payment(c: CallbackQuery):
     data = pending.get(c.from_user.id)
@@ -601,6 +631,9 @@ async def main():
     prepare_database()
     await init_db()
     await init_product_prices({**PRODUCTS, **UC_PRODUCTS})
+    await init_product_statuses({**PRODUCTS, **UC_PRODUCTS})
+    global PRODUCT_STATUS
+    PRODUCT_STATUS = await get_product_statuses()
     saved_prices = await get_product_prices()
     for code, price in saved_prices.items():
         product = PRODUCTS.get(code) or UC_PRODUCTS.get(code)
@@ -625,6 +658,7 @@ async def main():
     dp.callback_query.register(on_support, F.data == "support")
     dp.callback_query.register(on_admin, F.data.startswith("admin:"))
     dp.callback_query.register(on_price, F.data.startswith("price:"))
+    dp.callback_query.register(on_product_toggle, F.data.startswith("producttoggle:"))
     dp.callback_query.register(on_acctadmin, F.data.startswith("acctadmin:"))
     dp.callback_query.register(on_account_status, F.data.startswith(("accsold:", "acchide:", "accavailable:")))
     dp.callback_query.register(on_payment, F.data.startswith("pay:"))
