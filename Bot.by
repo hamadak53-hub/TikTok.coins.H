@@ -1,41 +1,22 @@
 import os
 import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-TOKEN = os.getenv("BOT_TOKEN")
-bot = telebot.TeleBot(TOKEN)
+bot = telebot.TeleBot(os.getenv("BOT_TOKEN"))
 
 @bot.message_handler(commands=["start"])
 def start(message):
-    keyboard = ReplyKeyboardMarkup(
-        resize_keyboard=True,
-        row_width=2
-    )
-
+    keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
-        KeyboardButton("🪙 شحن عملات"),
-        KeyboardButton("🎮 شراء حساب"),
-        KeyboardButton("🎯 شحن ألعاب"),
-        KeyboardButton("🛟 الدعم")
+        InlineKeyboardButton("🪙 شحن عملات", callback_data="coins"),
+        InlineKeyboardButton("🎮 شراء حساب", callback_data="accounts"),
+        InlineKeyboardButton("🎯 شحن ألعاب", callback_data="games"),
+        InlineKeyboardButton("🛟 الدعم", callback_data="support")
     )
+    bot.send_message(message.chat.id, "🛍️", reply_markup=keyboard)
 
-    bot.send_message(
-        message.chat.id,
-        "اختار الخدمة اللي محتاجها من الأزرار:",
-        reply_markup=keyboard
-    )
-
-@bot.message_handler(func=lambda message: True)
-def handle_service(message):
-    if message.text == "🪙 شحن عملات":
-        bot.reply_to(message, "اخترت شحن عملات.")
-    elif message.text == "🎮 شراء حساب":
-        bot.reply_to(message, "اخترت شراء حساب.")
-    elif message.text == "🎯 شحن ألعاب":
-        bot.reply_to(message, "اخترت شحن ألعاب.")
-    elif message.text == "🛟 الدعم":
-        bot.reply_to(message, "اخترت الدعم.")
-    else:
-        bot.reply_to(message, "اختار خدمة من الأزرار الموجودة.")
+@bot.callback_query_handler(func=lambda call: True)
+def buttons(call):
+    bot.answer_callback_query(call.id)
 
 bot.infinity_polling()
