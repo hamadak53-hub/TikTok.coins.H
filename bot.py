@@ -51,10 +51,16 @@ def admin_keyboard():
     ])
 
 def cancel_markup():
-    return kb([[InlineKeyboardButton(text="❌ إلغاء", callback_data="cancel")]])
+    return kb([
+        [InlineKeyboardButton(text="🏠 القائمة الرئيسية", callback_data="home")],
+        [InlineKeyboardButton(text="❌ إلغاء", callback_data="cancel")]
+    ])
 
 def with_cancel(rows):
-    return kb(rows + [[InlineKeyboardButton(text="❌ إلغاء", callback_data="cancel")]])
+    return kb(rows + [
+        [InlineKeyboardButton(text="🏠 القائمة الرئيسية", callback_data="home")],
+        [InlineKeyboardButton(text="❌ إلغاء", callback_data="cancel")]
+    ])
 
 def payment_methods():
     return with_cancel([
@@ -95,6 +101,18 @@ async def start(message: Message):
     await message.answer(
         f"🖤 أهلاً بك في {STORE_NAME}\nمتجر شحن العملات وبيع الحسابات\n\nاختار الخدمة:",
         reply_markup=home())
+
+
+async def on_home(c: CallbackQuery):
+    uid = c.from_user.id
+    pending.pop(uid, None)
+    support_mode.discard(uid)
+    reply_targets.pop(uid, None)
+    await c.answer()
+    await c.message.answer(
+        f"🖤 أهلاً بك في {STORE_NAME}\\nاختار الخدمة:",
+        reply_markup=home()
+    )
 
 
 async def on_cancel(c: CallbackQuery):
@@ -504,6 +522,7 @@ async def main():
     dp.message.register(on_text, F.text)
 
     dp.callback_query.register(on_cancel, F.data == "cancel")
+    dp.callback_query.register(on_home, F.data == "home")
     dp.callback_query.register(on_catalog, F.data == "catalog")
     dp.callback_query.register(on_uc_catalog, F.data == "uc_catalog")
     dp.callback_query.register(on_buy_uc, F.data.startswith("buyuc:"))
