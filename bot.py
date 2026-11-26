@@ -11,7 +11,8 @@ from db import (
     init_db, register_customer, add_order, get_order, confirm_payment,
     reject_payment, get_orders, get_customers, get_dashboard_stats,
     add_account, get_accounts, get_account, request_account,
-    get_account_requests, set_account_status, save_support_message
+    get_account_requests, set_account_status, save_support_message,
+    init_product_prices, get_product_prices, set_product_price
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -47,6 +48,7 @@ def admin_keyboard():
         [InlineKeyboardButton(text="🎮 PUBG", callback_data="acctadmin:pubg"),
          InlineKeyboardButton(text="🎵 TikTok", callback_data="acctadmin:tiktok")],
         [InlineKeyboardButton(text="📨 طلبات الحسابات", callback_data="acctadmin:requests")],
+        [InlineKeyboardButton(text="💰 تعديل أسعار الشحن", callback_data="admin:prices")],
         [InlineKeyboardButton(text="📢 رسالة جماعية", callback_data="broadcast")]
     ])
 
@@ -234,6 +236,13 @@ async def on_admin(c: CallbackQuery):
     elif section == "customers":
         customers = await get_customers(1000)
         await c.message.answer(f"👥 عدد العملاء المسجلين: {len(customers)}")
+    elif section == "prices":
+        rows = []
+        for p in PRODUCTS.values():
+            rows.append([InlineKeyboardButton(text=f"🪙 TikTok {p['coins']:,} — {p['price']} جنيه", callback_data=f"price:{p['code']}")])
+        for p in UC_PRODUCTS.values():
+            rows.append([InlineKeyboardButton(text=f"🎮 PUBG {p['coins']:,} UC — {p['price']} جنيه", callback_data=f"price:{p['code']}")])
+        await c.message.answer("💰 اختار الباقة اللي عايز تعدل سعرها:", reply_markup=with_cancel(rows))
     await c.answer()
 
 async def on_acctadmin(c: CallbackQuery):
@@ -273,6 +282,24 @@ async def on_account_status(c: CallbackQuery):
     await set_account_status(int(raw), status)
     await c.answer("تم تحديث حالة الحساب.")
     await c.message.answer("✅ تم تحديث حالة الحساب.")
+
+async def on_price(c: CallbackQuery):
+    if not is_admin(c.from_user.id):
+        await c.answer("غير مسموح لك.", show_alert=True)
+        return
+    code = c.data.split(":", 1)[1]
+    product = PRODUCTS.get(code) or UC_PRODUCTS.get(code)
+    if not product:
+        await c.answer("الباقة غير موجودة.", show_alert=True)
+        return
+    pending[c.from_user.id] = {"step": "price_edit", "code": code}
+    service = "TikTok" if code in PRODUCTS else "PUBG UC"
+    await c.message.answer(
+        f"✏️ تعديل سعر {service} {product['coins']:,}\nالسعر الحالي: {product['price']} جنيه\nأرسل السعر الجديد بالجنيه المصري (أرقام فقط):",
+        reply_markup=cancel_markup()
+    )
+    await c.answer()
+
 
 async def on_payment(c: CallbackQuery):
     data = pending.get(c.from_user.id)
@@ -383,6 +410,25 @@ async def on_text(m: Message):
     data = pending.get(uid)
     if data:
         step = data.get("step")
+        if step == "price_edit" and is_admin(uid):
+            try:
+                new_price = int(txt)
+                if new_price <= 0 or new_price > 100000000:
+                    raise ValueError
+            except ValueError:
+                await m.answer("السعر غير صحيح. أرسل رقماً أكبر من صفر بالجنيه المصري.", reply_markup=cancel_markup())
+                return
+            code = data["code"]
+            product = PRODUCTS.get(code) or UC_PRODUCTS.get(code)
+            if not product:
+                pending.pop(uid, None)
+                await m.answer("الباقة غير موجودة.")
+                return
+            await set_product_price(code, new_price)
+            product["price"] = new_price
+            pending.pop(uid, None)
+            await m.answer(f"✅ تم تعديل سعر باقة {product['coins']:,} إلى {new_price} جنيه.\nالسعر محفوظ حتى بعد إعادة تشغيل البوت.", reply_markup=admin_keyboard())
+            return
         if step == "broadcast" and is_admin(uid):
             customers = await get_customers(100000)
             sent = failed = 0
@@ -513,6 +559,12 @@ async def main():
     if not ADMIN_IDS:
         raise RuntimeError("ADMIN_IDS غير مضبوط. ضع Telegram user ID واحداً على الأقل.")
     await init_db()
+    await init_product_prices({**PRODUCTS, **UC_PRODUCTS})
+    saved_prices = await get_product_prices()
+    for code, price in saved_prices.items():
+        product = PRODUCTS.get(code) or UC_PRODUCTS.get(code)
+        if product:
+            product["price"] = price
     bot = Bot(BOT_TOKEN)
     dp = Dispatcher()
 
@@ -531,6 +583,7 @@ async def main():
     dp.callback_query.register(on_buy_account, F.data.startswith("buyacc:"))
     dp.callback_query.register(on_support, F.data == "support")
     dp.callback_query.register(on_admin, F.data.startswith("admin:"))
+    dp.callback_query.register(on_price, F.data.startswith("price:"))
     dp.callback_query.register(on_acctadmin, F.data.startswith("acctadmin:"))
     dp.callback_query.register(on_account_status, F.data.startswith(("accsold:", "acchide:", "accavailable:")))
     dp.callback_query.register(on_payment, F.data.startswith("pay:"))
