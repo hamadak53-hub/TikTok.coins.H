@@ -6,5 +6,5 @@ ADMIN_IDS = {
     for x in os.getenv("ADMIN_IDS", "").split(",")
     if x.strip().isdigit()
 }
-DB_PATH = os.getenv("DB_PATH", "hamo_store.db")
+DB_PATH = os.getenv("DB_PATH") or ("/var/data/hamo_store.db" if os.path.isdir("/var/data") else "hamo_store.db")
 STORE_NAME = os.getenv("STORE_NAME", "HAMO STORE")

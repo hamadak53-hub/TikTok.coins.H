@@ -1,11 +1,13 @@
 import asyncio
 import logging
+import os
+import sqlite3
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 
-from config import BOT_TOKEN, ADMIN_IDS, STORE_NAME
+from config import BOT_TOKEN, ADMIN_IDS, STORE_NAME, DB_PATH
 from catalog import PRODUCTS, UC_PRODUCTS
 from db import (
     init_db, register_customer, add_order, get_order, confirm_payment,
@@ -562,11 +564,41 @@ async def on_photo(m: Message):
         log.exception("Receipt processing failed")
         await m.answer("حدث خطأ أثناء تسجيل الإيصال. حاول مرة أخرى.")
 
+def prepare_database():
+    """Use Render's persistent disk and safely copy the legacy SQLite DB once."""
+    target = os.path.abspath(DB_PATH)
+    legacy = os.path.abspath("hamo_store.db")
+    os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+
+    if target != legacy and not os.path.exists(target) and os.path.exists(legacy):
+        # SQLite backup includes committed WAL contents; safer than copying the file.
+        with sqlite3.connect(legacy) as source, sqlite3.connect(target) as destination:
+            source.backup(destination)
+        log.warning("Migrated legacy database from %s to %s", legacy, target)
+
+    log.info("Using SQLite database: %s", target)
+    if os.path.exists(target):
+        try:
+            with sqlite3.connect(target) as db:
+                tables = {row[0] for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )}
+                if "accounts" in tables:
+                    rows = db.execute(
+                        "SELECT LOWER(TRIM(category)), status, COUNT(*) "
+                        "FROM accounts GROUP BY LOWER(TRIM(category)), status"
+                    ).fetchall()
+                    log.info("Saved account counts by category/status: %s", rows)
+        except sqlite3.Error:
+            log.exception("Could not inspect SQLite database before initialization")
+
+
 async def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN غير مضبوط في Environment Variables")
     if not ADMIN_IDS:
         raise RuntimeError("ADMIN_IDS غير مضبوط. ضع Telegram user ID واحداً على الأقل.")
+    prepare_database()
     await init_db()
     await init_product_prices({**PRODUCTS, **UC_PRODUCTS})
     saved_prices = await get_product_prices()
