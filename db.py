@@ -1,5 +1,5 @@
 import aiosqlite
-from app.config import DB_PATH
+from config import DB_PATH
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
