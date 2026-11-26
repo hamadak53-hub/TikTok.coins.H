@@ -10,6 +10,11 @@ async def init_db():
             price INTEGER NOT NULL
         )""")
         await db.execute("""
+        CREATE TABLE IF NOT EXISTS product_status (
+            product_code TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 1
+        )""")
+        await db.execute("""
         CREATE TABLE IF NOT EXISTS customers (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
@@ -215,4 +220,20 @@ async def get_product_prices():
 async def set_product_price(product_code, price):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT INTO product_prices(product_code, price) VALUES(?, ?) ON CONFLICT(product_code) DO UPDATE SET price=excluded.price", (product_code, int(price)))
+        await db.commit()
+
+async def init_product_statuses(products):
+    async with aiosqlite.connect(DB_PATH) as db:
+        for code in products:
+            await db.execute("INSERT OR IGNORE INTO product_status(product_code, enabled) VALUES(?, 1)", (code,))
+        await db.commit()
+
+async def get_product_statuses():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT product_code, enabled FROM product_status")
+        return {code: bool(enabled) for code, enabled in await cur.fetchall()}
+
+async def set_product_status(product_code, enabled):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT INTO product_status(product_code, enabled) VALUES(?, ?) ON CONFLICT(product_code) DO UPDATE SET enabled=excluded.enabled", (product_code, 1 if enabled else 0))
         await db.commit()
