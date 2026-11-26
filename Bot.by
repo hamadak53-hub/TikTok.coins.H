@@ -1,15 +1,42 @@
 import os
 import telebot
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
 TOKEN = os.getenv("BOT_TOKEN")
 bot = telebot.TeleBot(TOKEN)
 
 @bot.message_handler(commands=["start"])
 def start(message):
-    bot.reply_to(
-        message,
-        "أهلاً بيك في متجر TikTok Coins!\n"
-        "سعر 1000 كوين: 590 جنيه."
+    keyboard = ReplyKeyboardMarkup(
+        resize_keyboard=True,
+        row_width=2
     )
+
+    keyboard.add(
+        KeyboardButton("🪙 شحن عملات"),
+        KeyboardButton("🎮 شراء حساب"),
+        KeyboardButton("🎯 شحن ألعاب"),
+        KeyboardButton("🛟 الدعم")
+    )
+
+    bot.send_message(
+        message.chat.id,
+        "أهلاً بيك في TikTok Coins! 🎉\n\n"
+        "اختار الخدمة اللي محتاجها من القائمة:",
+        reply_markup=keyboard
+    )
+
+@bot.message_handler(func=lambda message: True)
+def handle_service(message):
+    if message.text == "🪙 شحن عملات":
+        bot.reply_to(message, "🪙 اخترت شحن عملات.\nهنبلغك بالتفاصيل والسعر قريبًا.")
+    elif message.text == "🎮 شراء حساب":
+        bot.reply_to(message, "🎮 اخترت شراء حساب.\nحدد طلبك من خلال التواصل مع الإدارة.")
+    elif message.text == "🎯 شحن ألعاب":
+        bot.reply_to(message, "🎯 اخترت شحن ألعاب.\nهنبلغك بالتفاصيل قريبًا.")
+    elif message.text == "🛟 الدعم":
+        bot.reply_to(message, "🛟 أنت الآن في قسم الدعم. تفاصيل التواصل هنضيفها لاحقًا.")
+    else:
+        bot.reply_to(message, "من فضلك اختار خدمة من الأزرار الموجودة في القائمة.")
 
 bot.infinity_polling()
