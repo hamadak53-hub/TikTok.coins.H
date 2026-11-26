@@ -5,9 +5,9 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 
-from .config import BOT_TOKEN, ADMIN_IDS, STORE_NAME
-from .catalog import PRODUCTS
-from .db import (
+from config import BOT_TOKEN, ADMIN_IDS, STORE_NAME
+from catalog import PRODUCTS
+from db import (
     init_db, register_customer, add_order, get_order, confirm_payment,
     reject_payment, get_orders, get_customers, get_dashboard_stats,
     add_account, get_accounts, get_account, request_account,
