@@ -307,6 +307,13 @@ async def on_approval(c: CallbackQuery):
         await confirm_payment(oid)
         status_text = "تم تأكيد الدفع بنجاح."
         customer_text = f"✅ تم تأكيد الدفع للطلب #{oid}. سيتم تنفيذ طلبك."
+        if str(order[4]).startswith("uc_"):
+            await notify_admins(
+                c.bot,
+                f"🎮 مطلوب تنفيذ شحن PUBG UC يدوياً\\nالطلب: #{oid}\\n"
+                f"Player ID: {order[3]}\\nالباقة: {order[5]} UC\\n"
+                f"المبلغ: {order[6]} جنيه\\nتم تأكيد وصول الدفع؛ نفّذ الشحن ثم تواصل مع العميل."
+            )
     else:
         await reject_payment(oid)
         status_text = "تم رفض الإيصال."
@@ -452,7 +459,7 @@ async def on_photo(m: Message):
         return
     if not data or data.get("step") != "receipt":
         return
-    p = PRODUCTS[data["code"]]
+    p = UC_PRODUCTS[data["code"]] if data.get("service") == "pubg_uc" else PRODUCTS[data["code"]]
     try:
         oid = await add_order(m.from_user.id, m.from_user.username, data["tiktok_id"], p, data["payment_method"], photo_id)
         pending.pop(m.from_user.id, None)
