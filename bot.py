@@ -35,7 +35,8 @@ def home():
         [InlineKeyboardButton(text="🎮 شحن شدات PUBG UC", callback_data="uc_catalog")],
         [InlineKeyboardButton(text="🎮 حسابات PUBG", callback_data="accounts:pubg")],
         [InlineKeyboardButton(text="🎵 حسابات TikTok", callback_data="accounts:tiktok")],
-        [InlineKeyboardButton(text="📞 الدعم", callback_data="support")]
+        [InlineKeyboardButton(text="📞 الدعم", callback_data="support")],
+        [InlineKeyboardButton(text="❌ إلغاء", callback_data="cancel")]
     ])
 
 def admin_keyboard():
