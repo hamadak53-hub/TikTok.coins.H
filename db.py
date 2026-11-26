@@ -131,6 +131,9 @@ async def get_dashboard_stats():
         return stats
 
 async def add_account(category, title, description, price, photo_file_id=None):
+    category = str(category).strip().lower()
+    if category not in ("pubg", "tiktok"):
+        raise ValueError("category must be pubg or tiktok")
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("""
         INSERT INTO accounts(category,title,description,price,photo_file_id)
@@ -145,8 +148,8 @@ async def get_accounts(category=None, available_only=True):
         args = []
         clauses = []
         if category:
-            clauses.append("category=?")
-            args.append(category)
+            clauses.append("LOWER(TRIM(category))=?")
+            args.append(str(category).strip().lower())
         if available_only:
             clauses.append("status='available'")
         if clauses:
