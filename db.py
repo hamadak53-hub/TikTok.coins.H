@@ -4,6 +4,7 @@ from config import DB_PATH
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS orders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,6 +37,25 @@ async def init_db():
                     f"ALTER TABLE orders ADD COLUMN {column} {definition}"
                 )
 
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS customers (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        await db.commit()
+
+
+async def register_customer(user_id, username=None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO customers (user_id, username)
+            VALUES (?, ?)
+            ON CONFLICT(user_id)
+            DO UPDATE SET username = excluded.username
+        """, (user_id, username))
         await db.commit()
 
 
@@ -48,8 +68,15 @@ async def add_order(
     receipt_file_id=None
 ):
     async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            """
+
+        await db.execute("""
+            INSERT INTO customers (user_id, username)
+            VALUES (?, ?)
+            ON CONFLICT(user_id)
+            DO UPDATE SET username = excluded.username
+        """, (user_id, username))
+
+        cur = await db.execute("""
             INSERT INTO orders (
                 user_id,
                 username,
@@ -64,18 +91,16 @@ async def add_order(
                 status
             )
             VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, 'pending', 'pending_payment_review')
-            """,
-            (
-                user_id,
-                username,
-                tiktok_id,
-                product["code"],
-                product["coins"],
-                product["price"],
-                payment_method,
-                receipt_file_id
-            )
-        )
+        """, (
+            user_id,
+            username,
+            tiktok_id,
+            product["code"],
+            product["coins"],
+            product["price"],
+            payment_method,
+            receipt_file_id
+        ))
 
         await db.commit()
         return cur.lastrowid
@@ -83,62 +108,188 @@ async def add_order(
 
 async def update_receipt(order_id, receipt_file_id):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
+        await db.execute("""
             UPDATE orders
             SET receipt_file_id = ?
             WHERE id = ?
-            """,
-            (receipt_file_id, order_id)
-        )
+        """, (receipt_file_id, order_id))
         await db.commit()
 
 
 async def confirm_payment(order_id):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
+        await db.execute("""
             UPDATE orders
             SET payment_status = 'confirmed',
                 status = 'paid_waiting_supplier'
             WHERE id = ?
-            """,
-            (order_id,)
-        )
+        """, (order_id,))
         await db.commit()
 
 
 async def reject_payment(order_id):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
+        await db.execute("""
             UPDATE orders
             SET payment_status = 'rejected',
                 status = 'payment_rejected'
             WHERE id = ?
-            """,
-            (order_id,)
-        )
+        """, (order_id,))
         await db.commit()
+
+
+async def update_order_status(order_id, status):
+    allowed = {
+        "pending_payment_review",
+        "paid_waiting_supplier",
+        "processing",
+        "completed",
+        "payment_rejected",
+        "cancelled",
+    }
+
+    if status not in allowed:
+        raise ValueError("Invalid order status")
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            UPDATE orders SET status = ?
+            WHERE id = ?
+        """, (status, order_id))
+        await db.commit()
+
+
+async def get_dashboard_stats():
+    async with aiosqlite.connect(DB_PATH) as db:
+
+        cur = await db.execute("""
+            SELECT
+                COUNT(*),
+                COALESCE(SUM(CASE
+                    WHEN payment_status = 'confirmed'
+                    THEN price ELSE 0 END), 0),
+                SUM(CASE
+                    WHEN payment_status = 'pending'
+                    THEN 1 ELSE 0 END),
+                SUM(CASE
+                    WHEN payment_status = 'confirmed'
+                    THEN 1 ELSE 0 END),
+                SUM(CASE
+                    WHEN payment_status = 'rejected'
+                    THEN 1 ELSE 0 END),
+                SUM(CASE
+                    WHEN status = 'completed'
+                    THEN 1 ELSE 0 END)
+            FROM orders
+        """)
+
+        orders = await cur.fetchone()
+
+        cur = await db.execute(
+            "SELECT COUNT(*) FROM customers"
+        )
+        customers = (await cur.fetchone())[0]
+
+        return {
+            "orders": orders[0] or 0,
+            "revenue": orders[1] or 0,
+            "pending": orders[2] or 0,
+            "paid": orders[3] or 0,
+            "rejected": orders[4] or 0,
+            "completed": orders[5] or 0,
+            "customers": customers or 0,
+        }
+
+
+async def get_orders(status=None, limit=20):
+    async with aiosqlite.connect(DB_PATH) as db:
+
+        if status:
+            cur = await db.execute("""
+                SELECT id, user_id, username, tiktok_id,
+                       coins, price, payment_method,
+                       payment_status, status, created_at
+                FROM orders
+                WHERE status = ?
+                ORDER BY id DESC LIMIT ?
+            """, (status, limit))
+        else:
+            cur = await db.execute("""
+                SELECT id, user_id, username, tiktok_id,
+                       coins, price, payment_method,
+                       payment_status, status, created_at
+                FROM orders
+                ORDER BY id DESC LIMIT ?
+            """, (limit,))
+
+        return await cur.fetchall()
+
+
+async def get_order(order_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("""
+            SELECT id, user_id, username, tiktok_id,
+                   product_code, coins, price,
+                   payment_method, receipt_file_id,
+                   payment_status, status, created_at
+            FROM orders
+            WHERE id = ?
+        """, (order_id,))
+
+        return await cur.fetchone()
+
+
+async def get_customers(limit=30):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("""
+            SELECT
+                c.user_id,
+                c.username,
+                COUNT(o.id),
+                COALESCE(SUM(
+                    CASE WHEN o.payment_status = 'confirmed'
+                    THEN o.price ELSE 0 END
+                ), 0)
+            FROM customers c
+            LEFT JOIN orders o ON c.user_id = o.user_id
+            GROUP BY c.user_id
+            ORDER BY c.created_at DESC
+            LIMIT ?
+        """, (limit,))
+
+        return await cur.fetchall()
+
+
+async def get_customer_orders(user_id, limit=20):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("""
+            SELECT id, coins, price, status, created_at
+            FROM orders
+            WHERE user_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+        """, (user_id, limit))
+
+        return await cur.fetchall()
+
+
+async def get_customer_ids():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT user_id FROM customers"
+        )
+        return [row[0] for row in await cur.fetchall()]
 
 
 async def latest_orders(limit=20):
     async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            """
-            SELECT
-                id,
-                user_id,
-                tiktok_id,
-                coins,
-                price,
-                status,
-                created_at
+        cur = await db.execute("""
+            SELECT id, user_id, tiktok_id, coins,
+                   price, status, created_at
             FROM orders
             ORDER BY id DESC
             LIMIT ?
-            """,
-            (limit,)
-        )
+        """, (limit,))
+
         return await cur.fetchall()
         
