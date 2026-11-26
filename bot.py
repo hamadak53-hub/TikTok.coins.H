@@ -61,8 +61,14 @@ def payment_methods():
         [InlineKeyboardButton(text="💳 إنستا باي", callback_data="pay:instapay")]
     ])
 
+def recipient_numbers_keyboard():
+    return with_cancel([
+        [InlineKeyboardButton(text=f"📱 {CASH_NUMBERS[0]}", callback_data="recipient:0")],
+        [InlineKeyboardButton(text=f"📱 {CASH_NUMBERS[1]}", callback_data="recipient:1")]
+    ])
+
 def receipt_buttons(oid, uid):
-    return kb([[InlineKeyboardButton(text="✅ تأكيد الدفع", callback_data=f"approve:{oid}:{uid}"),
+    return kb([[InlineKeyboardButton(text="✅ تأكيد بعد التحقق", callback_data=f"approve:{oid}:{uid}"),
                 InlineKeyboardButton(text="❌ رفض الدفع", callback_data=f"reject:{oid}:{uid}")]])
 
 def account_buttons(aid):
@@ -233,10 +239,35 @@ async def on_payment(c: CallbackQuery):
         return
     method = c.data.split(":")[1]
     data["payment_method"] = "فودافون كاش" if method == "vodafone" else "إنستا باي"
-    data["step"] = "receipt"
-    nums = "\n".join("📱 " + n for n in CASH_NUMBERS)
-    await c.message.answer(f"حوّل المبلغ إلى أحد الأرقام:\n{nums}\n\nثم أرسل صورة الإيصال هنا.", reply_markup=cancel_markup())
+    data["step"] = "recipient"
+    await c.message.answer(
+        "اختار الرقم اللي هتحوّل عليه المبلغ، وبعد التحويل ابعت صورة الإيصال:",
+        reply_markup=recipient_numbers_keyboard()
+    )
     await c.answer()
+
+
+async def on_recipient(c: CallbackQuery):
+    data = pending.get(c.from_user.id)
+    if not data or data.get("step") != "recipient":
+        await c.answer("ابدأ طلب شحن جديد.", show_alert=True)
+        return
+    try:
+        index = int(c.data.split(":")[1])
+        recipient = CASH_NUMBERS[index]
+    except (ValueError, IndexError):
+        await c.answer("اختيار غير صحيح.", show_alert=True)
+        return
+    data["recipient_number"] = recipient
+    data["step"] = "receipt"
+    await c.message.answer(
+        f"حوّل المبلغ إلى الرقم المحدد فقط:\n📱 {recipient}\n\n"
+        "بعد التحويل أرسل صورة الإيصال هنا. الإدارة هتراجع وصول المبلغ "
+        "يدويًا على الرقم ده قبل تأكيد الطلب.",
+        reply_markup=cancel_markup()
+    )
+    await c.answer("تم تحديد رقم التحويل.")
+
 
 async def on_approval(c: CallbackQuery):
     if not is_admin(c.from_user.id):
@@ -388,9 +419,11 @@ async def on_photo(m: Message):
         oid = await add_order(m.from_user.id, m.from_user.username, data["tiktok_id"], p, data["payment_method"], photo_id)
         pending.pop(m.from_user.id, None)
         await m.answer(f"✅ تم استلام الإيصال. رقم الطلب: #{oid}\nالحالة: بانتظار مراجعة الإدارة.")
-        caption = (f"🧾 طلب جديد #{oid}\nالعميل: {m.from_user.id}\n"
-                   f"Username: @{m.from_user.username or 'غير متوفر'}\nTikTok: @{data['tiktok_id']}\n"
-                   f"الباقة: {p['coins']} Coins\nالسعر: {p['price']} جنيه\nالدفع: {data['payment_method']}")
+        caption = (f"🧾 طلب جديد #{oid}\\nالعميل: {m.from_user.id}\\n"
+                   f"Username: @{m.from_user.username or 'غير متوفر'}\\nTikTok: @{data['tiktok_id']}\\n"
+                   f"الباقة: {p['coins']} Coins\\nالسعر: {p['price']} جنيه\\nالدفع: {data['payment_method']}\\n"
+                   f"📌 رقم التحويل المختار: {data.get('recipient_number', 'غير محدد')}\\n"
+                   "⚠️ راجع سجل التحويل على الرقم المحدد. لا تضغط تأكيد إلا بعد التأكد من وصول المبلغ.")
         for aid in ADMIN_IDS:
             try:
                 await m.bot.send_photo(aid, photo_id, caption=caption,
@@ -425,6 +458,7 @@ async def main():
     dp.callback_query.register(on_acctadmin, F.data.startswith("acctadmin:"))
     dp.callback_query.register(on_account_status, F.data.startswith(("accsold:", "acchide:", "accavailable:")))
     dp.callback_query.register(on_payment, F.data.startswith("pay:"))
+    dp.callback_query.register(on_recipient, F.data.startswith("recipient:"))
     dp.callback_query.register(on_approval, F.data.startswith(("approve:", "reject:")))
     dp.callback_query.register(on_reply, F.data.startswith("reply:"))
     dp.callback_query.register(on_broadcast, F.data == "broadcast")
