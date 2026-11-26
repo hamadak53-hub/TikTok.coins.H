@@ -15,7 +15,8 @@ from db import (
     add_account, get_accounts, get_account, request_account,
     get_account_requests, set_account_status, save_support_message,
     init_product_prices, get_product_prices, set_product_price,
-    init_product_statuses, get_product_statuses, set_product_status
+    init_product_statuses, get_product_statuses, set_product_status,
+    add_custom_product, get_custom_products, delete_custom_product
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -253,7 +254,10 @@ async def on_admin(c: CallbackQuery):
             enabled = PRODUCT_STATUS.get(p["code"], True)
             label = "🟢 ظاهر" if enabled else "⚫ مخفي"
             rows.append([InlineKeyboardButton(text=f"{label} | PUBG {p['coins']:,} UC", callback_data=f"producttoggle:{p['code']}")])
-        await c.message.answer("🧰 إدارة المنتجات\nاضغط على المنتج لتبديل حالته بين ظاهر ومخفي.\nالإخفاء لا يحذف المنتج أو الطلبات القديمة.", reply_markup=with_cancel(rows))
+        for p in list(PRODUCTS.values()) + list(UC_PRODUCTS.values()):
+            rows.append([InlineKeyboardButton(text=f"🗑 حذف {p['coins']:,} ({'TikTok' if p['code'] in PRODUCTS else 'PUBG'})", callback_data=f"productdelete:{p['code']}")])
+        rows.insert(0, [InlineKeyboardButton(text="➕ إضافة باقة جديدة", callback_data="productadd")])
+        await c.message.answer("🧰 إدارة المنتجات\nاضغط على ظاهر/مخفي لتغيير العرض. للحذف اضغط زر الحذف ثم أكد. الطلبات القديمة تظل محفوظة.", reply_markup=with_cancel(rows))
     elif section == "prices":
         rows = []
         for p in PRODUCTS.values():
@@ -319,6 +323,42 @@ async def on_price(c: CallbackQuery):
     )
     await c.answer()
 
+
+async def on_product_add(c: CallbackQuery):
+    if not is_admin(c.from_user.id):
+        await c.answer("غير مسموح لك.", show_alert=True)
+        return
+    pending[c.from_user.id] = {"step": "new_product_category"}
+    await c.message.answer("اختار نوع الباقة واكتب: tiktok أو pubg", reply_markup=cancel_markup())
+    await c.answer()
+
+async def on_product_delete(c: CallbackQuery):
+    if not is_admin(c.from_user.id):
+        await c.answer("غير مسموح لك.", show_alert=True)
+        return
+    code = c.data.split(":", 1)[1]
+    product = PRODUCTS.get(code) or UC_PRODUCTS.get(code)
+    if not product:
+        await c.answer("المنتج غير موجود.", show_alert=True)
+        return
+    rows = [[InlineKeyboardButton(text="🗑 نعم، احذف نهائياً", callback_data=f"productdelconfirm:{code}")],
+            [InlineKeyboardButton(text="↩️ إلغاء", callback_data="admin:products")]]
+    await c.message.answer(f"تأكيد حذف باقة {product['coins']:,}؟\nلن تظهر للعملاء بعد الحذف، لكن الطلبات القديمة لن تُمسح.", reply_markup=kb(rows))
+    await c.answer()
+
+async def on_product_delete_confirm(c: CallbackQuery):
+    if not is_admin(c.from_user.id):
+        await c.answer("غير مسموح لك.", show_alert=True)
+        return
+    code = c.data.split(":", 1)[1]
+    product = PRODUCTS.pop(code, None) or UC_PRODUCTS.pop(code, None)
+    if not product:
+        await c.answer("المنتج غير موجود أو تم حذفه.", show_alert=True)
+        return
+    await delete_custom_product(code)
+    PRODUCT_STATUS.pop(code, None)
+    await c.answer("تم حذف المنتج نهائياً.")
+    await c.message.answer("✅ تم حذف الباقة من قائمة البيع. الطلبات القديمة محفوظة.", reply_markup=admin_keyboard())
 
 async def on_product_toggle(c: CallbackQuery):
     if not is_admin(c.from_user.id):
@@ -444,6 +484,49 @@ async def on_text(m: Message):
     data = pending.get(uid)
     if data:
         step = data.get("step")
+        if step == "new_product_category" and is_admin(uid):
+            category = txt.strip().lower()
+            if category not in ("tiktok", "pubg"):
+                await m.answer("اكتب tiktok أو pubg فقط.", reply_markup=cancel_markup())
+                return
+            data.update(step="new_product_quantity", category=category)
+            await m.answer("أرسل كمية العملات أو UC بالأرقام فقط:")
+            return
+        if step == "new_product_quantity" and is_admin(uid):
+            try:
+                quantity = int(txt.replace(",", "").replace("٬", ""))
+                if quantity <= 0 or quantity > 1000000000:
+                    raise ValueError
+            except ValueError:
+                await m.answer("الكمية غير صحيحة. أرسل رقماً أكبر من صفر.")
+                return
+            data.update(step="new_product_price", quantity=quantity)
+            await m.answer("أرسل سعر الباقة بالجنيه المصري:")
+            return
+        if step == "new_product_price" and is_admin(uid):
+            try:
+                price = int(txt.replace(",", "").replace("٬", ""))
+                if price <= 0 or price > 100000000:
+                    raise ValueError
+            except ValueError:
+                await m.answer("السعر غير صحيح. أرسل رقماً أكبر من صفر.")
+                return
+            category = data["category"]
+            quantity = data["quantity"]
+            code = f"custom_{category}_{quantity}"
+            product = {"code": code, "coins": quantity, "price": price}
+            try:
+                await add_custom_product(category, product)
+            except ValueError as exc:
+                await m.answer(str(exc), reply_markup=admin_keyboard())
+                pending.pop(uid, None)
+                return
+            target = PRODUCTS if category == "tiktok" else UC_PRODUCTS
+            target[code] = product
+            PRODUCT_STATUS[code] = True
+            pending.pop(uid, None)
+            await m.answer(f"✅ تمت إضافة باقة {'TikTok' if category == 'tiktok' else 'PUBG'}: {quantity:,} — {price} جنيه. أصبحت ظاهرة للعملاء.", reply_markup=admin_keyboard())
+            return
         if step == "price_edit" and is_admin(uid):
             try:
                 new_price = int(txt)
@@ -634,6 +717,9 @@ async def main():
     await init_product_statuses({**PRODUCTS, **UC_PRODUCTS})
     global PRODUCT_STATUS
     PRODUCT_STATUS = await get_product_statuses()
+    custom_products = await get_custom_products()
+    for category, product in custom_products:
+        (PRODUCTS if category == "tiktok" else UC_PRODUCTS)[product["code"]] = product
     saved_prices = await get_product_prices()
     for code, price in saved_prices.items():
         product = PRODUCTS.get(code) or UC_PRODUCTS.get(code)
@@ -659,6 +745,9 @@ async def main():
     dp.callback_query.register(on_admin, F.data.startswith("admin:"))
     dp.callback_query.register(on_price, F.data.startswith("price:"))
     dp.callback_query.register(on_product_toggle, F.data.startswith("producttoggle:"))
+    dp.callback_query.register(on_product_add, F.data == "productadd")
+    dp.callback_query.register(on_product_delete, F.data.startswith("productdelete:"))
+    dp.callback_query.register(on_product_delete_confirm, F.data.startswith("productdelconfirm:"))
     dp.callback_query.register(on_acctadmin, F.data.startswith("acctadmin:"))
     dp.callback_query.register(on_account_status, F.data.startswith(("accsold:", "acchide:", "accavailable:")))
     dp.callback_query.register(on_payment, F.data.startswith("pay:"))
