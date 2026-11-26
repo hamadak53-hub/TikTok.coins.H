@@ -49,8 +49,14 @@ def admin_keyboard():
         [InlineKeyboardButton(text="📢 رسالة جماعية", callback_data="broadcast")]
     ])
 
+def cancel_markup():
+    return kb([[InlineKeyboardButton(text="❌ إلغاء", callback_data="cancel")]])
+
+def with_cancel(rows):
+    return kb(rows + [[InlineKeyboardButton(text="❌ إلغاء", callback_data="cancel")]])
+
 def payment_methods():
-    return kb([
+    return with_cancel([
         [InlineKeyboardButton(text="📱 فودافون كاش", callback_data="pay:vodafone")],
         [InlineKeyboardButton(text="💳 إنستا باي", callback_data="pay:instapay")]
     ])
@@ -60,7 +66,7 @@ def receipt_buttons(oid, uid):
                 InlineKeyboardButton(text="❌ رفض الدفع", callback_data=f"reject:{oid}:{uid}")]])
 
 def account_buttons(aid):
-    return kb([[InlineKeyboardButton(text="🛒 اطلب الحساب", callback_data=f"buyacc:{aid}")]])
+    return with_cancel([[InlineKeyboardButton(text="🛒 اطلب الحساب", callback_data=f"buyacc:{aid}")]])
 
 def account_admin_buttons(aid, status):
     if status == "available":
@@ -83,6 +89,18 @@ async def start(message: Message):
         f"🖤 أهلاً بك في {STORE_NAME}\nمتجر شحن العملات وبيع الحسابات\n\nاختار الخدمة:",
         reply_markup=home())
 
+
+async def on_cancel(c: CallbackQuery):
+    uid = c.from_user.id
+    pending.pop(uid, None)
+    support_mode.discard(uid)
+    reply_targets.pop(uid, None)
+    await c.answer("تم إلغاء العملية.")
+    await c.message.answer(
+        f"❌ تم إلغاء العملية الحالية.\n\n🖤 أهلاً بك في {STORE_NAME}\nاختار الخدمة:",
+        reply_markup=home()
+    )
+
 async def on_catalog(c: CallbackQuery):
     rows = []
     for p in PRODUCTS.values():
@@ -94,7 +112,7 @@ async def on_catalog(c: CallbackQuery):
     if not rows:
         await c.answer("الباقات غير مفعلة. راجع أسعار app/catalog.py", show_alert=True)
     else:
-        await c.message.answer("🪙 اختر باقة الشحن:", reply_markup=kb(rows))
+        await c.message.answer("🪙 اختر باقة الشحن:", reply_markup=with_cancel(rows))
         await c.answer()
 
 async def on_buy(c: CallbackQuery):
@@ -103,7 +121,7 @@ async def on_buy(c: CallbackQuery):
         await c.answer("الباقة غير متاحة حالياً.", show_alert=True)
         return
     pending[c.from_user.id] = {"step": "tiktok_id", "code": code}
-    await c.message.answer("أرسل TikTok ID أو اسم المستخدم المطلوب شحنه:")
+    await c.message.answer("أرسل TikTok ID أو اسم المستخدم المطلوب شحنه:", reply_markup=cancel_markup())
     await c.answer()
 
 async def on_accounts(c: CallbackQuery):
@@ -145,7 +163,7 @@ async def on_buy_account(c: CallbackQuery):
 
 async def on_support(c: CallbackQuery):
     support_mode.add(c.from_user.id)
-    await c.message.answer("📞 اكتب رسالتك هنا، وسيتم إرسالها للإدارة. لإلغاء الدعم اكتب /cancel")
+    await c.message.answer("📞 اكتب رسالتك هنا، وسيتم إرسالها للإدارة:", reply_markup=cancel_markup())
     await c.answer()
 
 async def on_admin(c: CallbackQuery):
@@ -177,7 +195,7 @@ async def on_acctadmin(c: CallbackQuery):
     section = c.data.split(":")[1]
     if section == "add":
         pending[c.from_user.id] = {"step":"account_category"}
-        await c.message.answer("اكتب نوع الحساب: pubg أو tiktok")
+        await c.message.answer("اكتب نوع الحساب: pubg أو tiktok", reply_markup=cancel_markup())
     elif section == "requests":
         reqs = await get_account_requests(40)
         if not reqs:
@@ -185,7 +203,7 @@ async def on_acctadmin(c: CallbackQuery):
         for r in reqs:
             await c.message.answer(
                 f"طلب حساب #{r[0]}\nالحساب: {r[7]}\nالنوع: {r[6]}\nالسعر: {r[8]} جنيه\nالعميل: {r[2]}\nالحالة: {r[4]}",
-                reply_markup=kb([[InlineKeyboardButton(text="📩 مراسلة العميل", callback_data=f"reply:{r[2]}")]]))
+                reply_markup=with_cancel([[InlineKeyboardButton(text="📩 مراسلة العميل", callback_data=f"reply:{r[2]}")]]))
     else:
         accounts = await get_accounts(section, available_only=False)
         if not accounts:
@@ -217,7 +235,7 @@ async def on_payment(c: CallbackQuery):
     data["payment_method"] = "فودافون كاش" if method == "vodafone" else "إنستا باي"
     data["step"] = "receipt"
     nums = "\n".join("📱 " + n for n in CASH_NUMBERS)
-    await c.message.answer(f"حوّل المبلغ إلى أحد الأرقام:\n{nums}\n\nثم أرسل صورة الإيصال هنا.")
+    await c.message.answer(f"حوّل المبلغ إلى أحد الأرقام:\n{nums}\n\nثم أرسل صورة الإيصال هنا.", reply_markup=cancel_markup())
     await c.answer()
 
 async def on_approval(c: CallbackQuery):
@@ -251,7 +269,7 @@ async def on_reply(c: CallbackQuery):
         return
     uid = int(c.data.split(":")[1])
     reply_targets[c.from_user.id] = uid
-    await c.message.answer(f"اكتب رسالتك للعميل {uid}:")
+    await c.message.answer(f"اكتب رسالتك للعميل {uid}:", reply_markup=cancel_markup())
     await c.answer()
 
 async def on_broadcast(c: CallbackQuery):
@@ -259,7 +277,7 @@ async def on_broadcast(c: CallbackQuery):
         await c.answer("غير مسموح لك.", show_alert=True)
         return
     pending[c.from_user.id] = {"step":"broadcast"}
-    await c.message.answer("أرسل نص الإعلان الجماعي الآن. اكتب /cancel للإلغاء.")
+    await c.message.answer("أرسل نص الإعلان الجماعي الآن:", reply_markup=cancel_markup())
     await c.answer()
 
 async def on_text(m: Message):
@@ -302,18 +320,18 @@ async def on_text(m: Message):
         if step == "account_category" and is_admin(uid):
             category = txt.lower()
             if category not in ("pubg", "tiktok"):
-                await m.answer("اكتب pubg أو tiktok فقط.")
+                await m.answer("اكتب pubg أو tiktok فقط.", reply_markup=cancel_markup())
                 return
             data.update(step="account_title", category=category)
-            await m.answer("اكتب اسم أو عنوان الحساب:")
+            await m.answer("اكتب اسم أو عنوان الحساب:", reply_markup=cancel_markup())
             return
         if step == "account_title":
             data.update(step="account_description", title=txt)
-            await m.answer("اكتب وصف الحساب أو اكتب: بدون")
+            await m.answer("اكتب وصف الحساب أو اكتب: بدون", reply_markup=cancel_markup())
             return
         if step == "account_description":
             data.update(step="account_price", description="" if txt == "بدون" else txt)
-            await m.answer("اكتب السعر بالجنيه المصري (أرقام فقط):")
+            await m.answer("اكتب السعر بالجنيه المصري (أرقام فقط):", reply_markup=cancel_markup())
             return
         if step == "account_price":
             try:
@@ -323,7 +341,7 @@ async def on_text(m: Message):
                 await m.answer("اكتب سعراً صحيحاً أكبر من صفر.")
                 return
             data.update(step="account_photo", price=price)
-            await m.answer("أرسل صورة الحساب أو اكتب تخطي:")
+            await m.answer("أرسل صورة الحساب أو اكتب تخطي:", reply_markup=cancel_markup())
             return
         if step == "account_photo":
             if txt != "تخطي":
@@ -397,6 +415,7 @@ async def main():
     dp.message.register(on_photo, F.photo)
     dp.message.register(on_text, F.text)
 
+    dp.callback_query.register(on_cancel, F.data == "cancel")
     dp.callback_query.register(on_catalog, F.data == "catalog")
     dp.callback_query.register(on_buy, F.data.startswith("buy:"))
     dp.callback_query.register(on_accounts, F.data.startswith("accounts:"))
