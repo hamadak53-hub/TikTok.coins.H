@@ -2,9 +2,9 @@ import asyncio
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery
-from app.config import BOT_TOKEN, ADMIN_IDS
-from app.db import init_db, add_order, latest_orders
-from app.catalog import PRODUCTS
+from config import BOT_TOKEN, ADMIN_IDS
+from db import init_db, add_order, latest_orders
+from catalog import PRODUCTS
 
 if not BOT_TOKEN:
     raise RuntimeError("Set BOT_TOKEN in .env")
