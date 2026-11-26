@@ -176,7 +176,7 @@ async def on_buy(c: CallbackQuery):
     await c.answer()
 
 async def on_accounts(c: CallbackQuery):
-    category = c.data.split(":")[1]
+    category = c.data.split(":")[1].strip().lower()
     accounts = await get_accounts(category)
     name = "PUBG Mobile" if category == "pubg" else "TikTok"
     if not accounts:
@@ -263,9 +263,10 @@ async def on_acctadmin(c: CallbackQuery):
                 f"طلب حساب #{r[0]}\nالحساب: {r[7]}\nالنوع: {r[6]}\nالسعر: {r[8]} جنيه\nالعميل: {r[2]}\nالحالة: {r[4]}",
                 reply_markup=with_cancel([[InlineKeyboardButton(text="📩 مراسلة العميل", callback_data=f"reply:{r[2]}")]]))
     else:
+        section = section.strip().lower()
         accounts = await get_accounts(section, available_only=False)
         if not accounts:
-            await c.message.answer("لا توجد حسابات في هذا القسم.")
+            await c.message.answer("لا توجد حسابات في هذا القسم. لو كنت أضفت حساباً ولم يظهر، راجع سجل Render للتأكد من قاعدة البيانات المستخدمة.")
         for a in accounts:
             text = f"#{a[0]} — {a[2]}\nالسعر: {a[4]} جنيه\nالحالة: {a[6]}"
             if a[5]:
@@ -509,9 +510,16 @@ async def on_text(m: Message):
 
 async def finish_account(m, data, photo_id):
     try:
-        aid = await add_account(data["category"], data["title"], data["description"], data["price"], photo_id)
+        category = str(data["category"]).strip().lower()
+        if category not in ("pubg", "tiktok"):
+            raise ValueError(f"Invalid account category: {category!r}")
+        aid = await add_account(category, data["title"], data["description"], data["price"], photo_id)
+        saved = await get_account(aid)
+        if not saved:
+            raise RuntimeError(f"Account #{aid} was not found after insert")
         pending.pop(m.from_user.id, None)
-        await m.answer(f"✅ تمت إضافة الحساب بنجاح. رقم الحساب: #{aid}")
+        category_name = "TikTok" if category == "tiktok" else "PUBG"
+        await m.answer(f"✅ تمت إضافة حساب {category_name} بنجاح. رقم الحساب: #{aid}\nتقدر تلاقيه في قسم {category_name} بلوحة الإدارة والمتجر.")
     except Exception:
         log.exception("Could not save account")
         await m.answer("حدث خطأ أثناء إضافة الحساب.")
