@@ -1,0 +1,15 @@
+import os
+import telebot
+
+TOKEN = os.getenv("BOT_TOKEN")
+bot = telebot.TeleBot(TOKEN)
+
+@bot.message_handler(commands=["start"])
+def start(message):
+    bot.reply_to(
+        message,
+        "أهلاً بيك في متجر TikTok Coins!\n"
+        "سعر 1000 كوين: 590 جنيه."
+    )
+
+bot.infinity_polling()
