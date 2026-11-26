@@ -1,4 +1,3 @@
-
 CURRENCY = "EGP"
 CURRENCY_NAME = "جنيه"
 
