@@ -6,7 +6,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 
 from config import BOT_TOKEN, ADMIN_IDS, STORE_NAME
-from catalog import PRODUCTS
+from catalog import PRODUCTS, UC_PRODUCTS
 from db import (
     init_db, register_customer, add_order, get_order, confirm_payment,
     reject_payment, get_orders, get_customers, get_dashboard_stats,
@@ -30,7 +30,8 @@ def kb(rows):
 
 def home():
     return kb([
-        [InlineKeyboardButton(text="🪙 شحن العملات", callback_data="catalog")],
+        [InlineKeyboardButton(text="🪙 شحن عملات TikTok", callback_data="catalog")],
+        [InlineKeyboardButton(text="🎮 شحن شدات PUBG UC", callback_data="uc_catalog")],
         [InlineKeyboardButton(text="🎮 حسابات PUBG", callback_data="accounts:pubg")],
         [InlineKeyboardButton(text="🎵 حسابات TikTok", callback_data="accounts:tiktok")],
         [InlineKeyboardButton(text="📞 الدعم", callback_data="support")]
@@ -120,6 +121,29 @@ async def on_catalog(c: CallbackQuery):
     else:
         await c.message.answer("🪙 اختر باقة الشحن:", reply_markup=with_cancel(rows))
         await c.answer()
+
+async def on_uc_catalog(c: CallbackQuery):
+    rows = []
+    for p in UC_PRODUCTS.values():
+        rows.append([InlineKeyboardButton(
+            text=f"{p['coins']:,} UC — {p['price']} جنيه",
+            callback_data=f"buyuc:{p['code']}")])
+    await c.message.answer("🎮 اختر باقة شدات PUBG Mobile:", reply_markup=with_cancel(rows))
+    await c.answer()
+
+
+async def on_buy_uc(c: CallbackQuery):
+    code = c.data.split(":", 1)[1]
+    if code not in UC_PRODUCTS:
+        await c.answer("الباقة غير متاحة حالياً.", show_alert=True)
+        return
+    pending[c.from_user.id] = {"step": "pubg_id", "code": code, "service": "pubg_uc"}
+    await c.message.answer(
+        "🎮 أرسل Player ID الخاص بحساب PUBG Mobile بدقة، وتأكد منه قبل الإرسال:",
+        reply_markup=cancel_markup()
+    )
+    await c.answer()
+
 
 async def on_buy(c: CallbackQuery):
     code = c.data.split(":", 1)[1]
@@ -380,6 +404,20 @@ async def on_text(m: Message):
                 return
             await finish_account(m, data, None)
             return
+        if step == "pubg_id":
+            player_id = txt.strip()
+            if not player_id.isdigit() or not 5 <= len(player_id) <= 20:
+                await m.answer("Player ID غير صحيح. أرسل الأرقام فقط وتأكد من الـ ID.", reply_markup=cancel_markup())
+                return
+            data.update(step="payment", tiktok_id=player_id, service="pubg_uc")
+            p = UC_PRODUCTS[data["code"]]
+            await m.answer(
+                f"🎮 خدمة: شحن PUBG UC\\nPlayer ID: {player_id}\\n"
+                f"الباقة: {p['coins']} UC\\nالسعر: {p['price']} جنيه\\n"
+                "الشحن يتم يدوياً بعد مراجعة الدفع. اختر وسيلة الدفع:",
+                reply_markup=payment_methods()
+            )
+            return
         if step == "tiktok_id":
             target = txt.lstrip("@")
             if not 2 <= len(target) <= 64:
@@ -419,11 +457,21 @@ async def on_photo(m: Message):
         oid = await add_order(m.from_user.id, m.from_user.username, data["tiktok_id"], p, data["payment_method"], photo_id)
         pending.pop(m.from_user.id, None)
         await m.answer(f"✅ تم استلام الإيصال. رقم الطلب: #{oid}\nالحالة: بانتظار مراجعة الإدارة.")
+        if data.get("service") == "pubg_uc":
+            order_details = (
+                f"🎮 الخدمة: شحن PUBG UC\\nPlayer ID: {data['tiktok_id']}\\n"
+                f"الباقة: {p['coins']} UC\\nالسعر: {p['price']} جنيه"
+            )
+        else:
+            order_details = (
+                f"الخدمة: شحن TikTok\\nTikTok ID: @{data['tiktok_id']}\\n"
+                f"الباقة: {p['coins']} Coins\\nالسعر: {p['price']} جنيه"
+            )
         caption = (f"🧾 طلب جديد #{oid}\\nالعميل: {m.from_user.id}\\n"
-                   f"Username: @{m.from_user.username or 'غير متوفر'}\\nTikTok: @{data['tiktok_id']}\\n"
-                   f"الباقة: {p['coins']} Coins\\nالسعر: {p['price']} جنيه\\nالدفع: {data['payment_method']}\\n"
+                   f"Username: @{m.from_user.username or 'غير متوفر'}\\n"
+                   f"{order_details}\\nالدفع: {data['payment_method']}\\n"
                    f"📌 رقم التحويل المختار: {data.get('recipient_number', 'غير محدد')}\\n"
-                   "⚠️ راجع سجل التحويل على الرقم المحدد. لا تضغط تأكيد إلا بعد التأكد من وصول المبلغ.")
+                   "⚠️ راجع وصول المبلغ يدوياً. بعد تأكيد الدفع نفّذ شحن UC يدوياً إذا كان الطلب PUBG.")
         for aid in ADMIN_IDS:
             try:
                 await m.bot.send_photo(aid, photo_id, caption=caption,
@@ -450,6 +498,8 @@ async def main():
 
     dp.callback_query.register(on_cancel, F.data == "cancel")
     dp.callback_query.register(on_catalog, F.data == "catalog")
+    dp.callback_query.register(on_uc_catalog, F.data == "uc_catalog")
+    dp.callback_query.register(on_buy_uc, F.data.startswith("buyuc:"))
     dp.callback_query.register(on_buy, F.data.startswith("buy:"))
     dp.callback_query.register(on_accounts, F.data.startswith("accounts:"))
     dp.callback_query.register(on_buy_account, F.data.startswith("buyacc:"))
