@@ -1,738 +1,426 @@
 import asyncio
-
+import logging
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
-from aiogram.types import (
-    Message, CallbackQuery,
-    InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
+
+from .config import BOT_TOKEN, ADMIN_IDS, STORE_NAME
+from .catalog import PRODUCTS
+from .db import (
+    init_db, register_customer, add_order, get_order, confirm_payment,
+    reject_payment, get_orders, get_customers, get_dashboard_stats,
+    add_account, get_accounts, get_account, request_account,
+    get_account_requests, set_account_status, save_support_message
 )
 
-from config import BOT_TOKEN, ADMIN_IDS
-from db import (
-    init_db,
-    add_order,
-    latest_orders,
-    confirm_payment,
-    reject_payment,
-    register_customer,
-    get_dashboard_stats,
-    get_orders,
-    get_customers,
-    get_order,
-    add_account,
-    get_accounts,
-    get_account,
-    request_account,
-    get_account_requests,
-    set_account_status,
-)
-from catalog import PRODUCTS
-
-
-if not BOT_TOKEN:
-    raise RuntimeError("Set BOT_TOKEN in .env")
-
-bot = Bot(BOT_TOKEN)
-dp = Dispatcher()
-
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("hamo-store")
 pending = {}
+support_mode = set()
+reply_targets = {}
 
 CASH_NUMBERS = ["01031921290", "01091924865"]
 
+def is_admin(uid):
+    return uid in ADMIN_IDS
 
-# =========================
-# KEYBOARDS
-# =========================
+def kb(rows):
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def home():
-    return InlineKeyboardMarkup(inline_keyboard=[
+    return kb([
         [InlineKeyboardButton(text="🪙 شحن العملات", callback_data="catalog")],
         [InlineKeyboardButton(text="🎮 حسابات PUBG", callback_data="accounts:pubg")],
         [InlineKeyboardButton(text="🎵 حسابات TikTok", callback_data="accounts:tiktok")],
         [InlineKeyboardButton(text="📞 الدعم", callback_data="support")]
     ])
 
-
 def admin_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
+    return kb([
         [InlineKeyboardButton(text="📊 الإحصائيات", callback_data="admin:stats")],
-        [
-            InlineKeyboardButton(text="📦 جميع الطلبات", callback_data="admin:orders"),
-            InlineKeyboardButton(text="⏳ الطلبات المعلقة", callback_data="admin:pending")
-        ],
+        [InlineKeyboardButton(text="📦 الطلبات", callback_data="admin:orders"),
+         InlineKeyboardButton(text="⏳ المعلقة", callback_data="admin:pending")],
         [InlineKeyboardButton(text="👥 العملاء", callback_data="admin:customers")],
-        [InlineKeyboardButton(text="➕ إضافة حساب للبيع", callback_data="acctadmin:add")],
-        [
-            InlineKeyboardButton(text="🎮 حسابات PUBG", callback_data="acctadmin:pubg"),
-            InlineKeyboardButton(text="🎵 حسابات TikTok", callback_data="acctadmin:tiktok")
-        ],
-        [InlineKeyboardButton(text="📨 طلبات شراء الحسابات", callback_data="acctadmin:requests")]
+        [InlineKeyboardButton(text="➕ إضافة حساب", callback_data="acctadmin:add")],
+        [InlineKeyboardButton(text="🎮 PUBG", callback_data="acctadmin:pubg"),
+         InlineKeyboardButton(text="🎵 TikTok", callback_data="acctadmin:tiktok")],
+        [InlineKeyboardButton(text="📨 طلبات الحسابات", callback_data="acctadmin:requests")],
+        [InlineKeyboardButton(text="📢 رسالة جماعية", callback_data="broadcast")]
     ])
-
 
 def payment_methods():
-    return InlineKeyboardMarkup(inline_keyboard=[
+    return kb([
         [InlineKeyboardButton(text="📱 فودافون كاش", callback_data="pay:vodafone")],
-        [InlineKeyboardButton(text="💳 إنستا باي", callback_data="pay:instapay")],
-        [InlineKeyboardButton(text="🏦 تحويل بنكي", callback_data="pay:bank")],
-        [InlineKeyboardButton(text="🌐 بوابة إلكترونية", callback_data="pay:gateway")]
+        [InlineKeyboardButton(text="💳 إنستا باي", callback_data="pay:instapay")]
     ])
 
+def receipt_buttons(oid, uid):
+    return kb([[InlineKeyboardButton(text="✅ تأكيد الدفع", callback_data=f"approve:{oid}:{uid}"),
+                InlineKeyboardButton(text="❌ رفض الدفع", callback_data=f"reject:{oid}:{uid}")]])
 
-def receipt_buttons(order_id, user_id):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(
-                text="✅ تأكيد الدفع",
-                callback_data=f"approve:{order_id}:{user_id}"
-            ),
-            InlineKeyboardButton(
-                text="❌ رفض الدفع",
-                callback_data=f"reject:{order_id}:{user_id}"
-            )
-        ]
-    ])
+def account_buttons(aid):
+    return kb([[InlineKeyboardButton(text="🛒 اطلب الحساب", callback_data=f"buyacc:{aid}")]])
 
-
-def account_buy_button(account_id):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text="🛒 اطلب الحساب",
-            callback_data=f"buyacc:{account_id}"
-        )]
-    ])
-
-
-def account_admin_buttons(account_id, status):
+def account_admin_buttons(aid, status):
     if status == "available":
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text="✅ تحديد كمباع",
-                callback_data=f"accsold:{account_id}"
-            )],
-            [InlineKeyboardButton(
-                text="🙈 إخفاء الحساب",
-                callback_data=f"acchide:{account_id}"
-            )]
-        ])
+        return kb([[InlineKeyboardButton(text="✅ مباع", callback_data=f"accsold:{aid}"),
+                    InlineKeyboardButton(text="🙈 إخفاء", callback_data=f"acchide:{aid}")]])
+    return kb([[InlineKeyboardButton(text="♻️ إتاحته للبيع", callback_data=f"accavailable:{aid}")]])
 
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text="♻️ إعادة الحساب للمتاح",
-            callback_data=f"accavailable:{account_id}"
-        )]
-    ])
-
-
-def is_admin(user_id):
-    return user_id in ADMIN_IDS
-
-
-# =========================
-# START
-# =========================
-
-@dp.message(CommandStart())
-async def start(m: Message):
-    pending.pop(m.from_user.id, None)
-
-    await register_customer(
-        m.from_user.id,
-        m.from_user.username
-    )
-
-    await m.answer(
-        "🖤 أهلاً بك في HAMO STORE\n"
-        "متجر شحن العملات وبيع الحسابات\n\n"
-        "اختار الخدمة:",
-        reply_markup=home()
-    )
-
-
-# =========================
-# COINS CATALOG
-# =========================
-
-@dp.callback_query(F.data == "catalog")
-async def catalog(c: CallbackQuery):
-    rows = []
-
-    for p in PRODUCTS.values():
-        rows.append([
-            InlineKeyboardButton(
-                text=f'{p["coins"]:,} عملة — {p["price"]} جنيه',
-                callback_data=f'buy:{p["code"]}'
-            )
-        ])
-
-    await c.message.answer(
-        "🪙 اختر باقة الشحن:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
-    )
-    await c.answer()
-
-
-@dp.callback_query(F.data.startswith("buy:"))
-async def buy(c: CallbackQuery):
-    code = c.data.split(":", 1)[1]
-
-    if code not in PRODUCTS:
-        await c.answer("الباقة غير متاحة", show_alert=True)
-        return
-
-    pending[c.from_user.id] = {
-        "code": code,
-        "step": "tiktok_id"
-    }
-
-    await c.message.answer(
-        "🎮 أرسل TikTok ID أو اسم المستخدم المطلوب شحنه:"
-    )
-    await c.answer()
-
-
-# =========================
-# CUSTOMER ACCOUNTS
-# =========================
-
-@dp.callback_query(F.data.startswith("accounts:"))
-async def show_accounts(c: CallbackQuery):
-    category = c.data.split(":")[1]
-
-    if category not in ("pubg", "tiktok"):
-        await c.answer("قسم غير متاح", show_alert=True)
-        return
-
-    accounts = await get_accounts(category=category)
-
-    category_name = (
-        "PUBG Mobile" if category == "pubg"
-        else "TikTok"
-    )
-
-    if not accounts:
-        await c.message.answer(
-            f"📭 لا توجد حسابات {category_name} متاحة حالياً.\n"
-            "تابعنا، سيتم إضافة حسابات جديدة قريباً."
-        )
-        await c.answer()
-        return
-
-    await c.message.answer(
-        f"🔥 الحسابات المتاحة - {category_name}\n"
-        "اختر الحساب المناسب لك:"
-    )
-
-    for account in accounts:
-        account_id = account[0]
-        title = account[2]
-        description = account[3] or "لا يوجد وصف"
-        price = account[4]
-        photo = account[5]
-
-        caption = (
-            f"🎮 {title}\n\n"
-            f"📝 التفاصيل: {description}\n"
-            f"💰 السعر: {price} جنيه\n\n"
-            "للطلب اضغط على الزر بالأسفل."
-        )
-
-        if photo:
-            await c.message.answer_photo(
-                photo=photo,
-                caption=caption,
-                reply_markup=account_buy_button(account_id)
-            )
-        else:
-            await c.message.answer(
-                caption,
-                reply_markup=account_buy_button(account_id)
-            )
-
-    await c.answer()
-
-
-@dp.callback_query(F.data.startswith("buyacc:"))
-async def buy_account(c: CallbackQuery):
-    account_id = int(c.data.split(":")[1])
-    account = await get_account(account_id)
-
-    if not account or account[6] != "available":
-        await c.answer(
-            "عذراً، الحساب لم يعد متاحاً.",
-            show_alert=True
-        )
-        return
-
-    request_id = await request_account(
-        account_id,
-        c.from_user.id,
-        c.from_user.username
-    )
-
-    if request_id is None:
-        await c.answer(
-            "الحساب لم يعد متاحاً.",
-            show_alert=True
-        )
-        return
-
-    category_name = (
-        "PUBG Mobile" if account[1] == "pubg"
-        else "TikTok"
-    )
-
-    await c.message.answer(
-        "✅ تم إرسال طلبك بنجاح.\n\n"
-        f"رقم الطلب: #{request_id}\n"
-        f"الحساب: {account[2]}\n"
-        f"السعر: {account[4]} جنيه\n\n"
-        "سيتم التواصل معك من الإدارة لإتمام البيع."
-    )
-
-    admin_text = (
-        f"🛒 طلب شراء حساب جديد #{request_id}\n\n"
-        f"نوع الحساب: {category_name}\n"
-        f"الحساب: {account[2]}\n"
-        f"السعر: {account[4]} جنيه\n\n"
-        f"العميل: {c.from_user.id}\n"
-        f"Username: @{c.from_user.username or 'غير متوفر'}"
-    )
-
+async def notify_admins(bot, text, **kwargs):
     for aid in ADMIN_IDS:
         try:
-            await bot.send_message(
-                aid,
-                admin_text,
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(
-                        text="📩 التواصل مع العميل",
-                        url=f"tg://user?id={c.from_user.id}"
-                    )],
-                    [InlineKeyboardButton(
-                        text="✅ تحديد الحساب كمباع",
-                        callback_data=f"accsold:{account_id}"
-                    )]
-                ])
-            )
-        except Exception as e:
-            print("Account notification error:", e)
+            await bot.send_message(aid, text, **kwargs)
+        except Exception:
+            log.exception("Admin notification failed for %s", aid)
 
-    await c.answer("تم إرسال طلبك.")
+async def start(message: Message):
+    pending.pop(message.from_user.id, None)
+    support_mode.discard(message.from_user.id)
+    await register_customer(message.from_user.id, message.from_user.username)
+    await message.answer(
+        f"🖤 أهلاً بك في {STORE_NAME}\nمتجر شحن العملات وبيع الحسابات\n\nاختار الخدمة:",
+        reply_markup=home())
 
+async def on_catalog(c: CallbackQuery):
+    rows = []
+    for p in PRODUCTS.values():
+        if int(p["price"]) <= 0:
+            continue
+        rows.append([InlineKeyboardButton(
+            text=f'{p["coins"]:,} عملة — {p["price"]} جنيه',
+            callback_data=f'buy:{p["code"]}')])
+    if not rows:
+        await c.answer("الباقات غير مفعلة. راجع أسعار app/catalog.py", show_alert=True)
+    else:
+        await c.message.answer("🪙 اختر باقة الشحن:", reply_markup=kb(rows))
+        await c.answer()
 
-# =========================
-# ADMIN ACCOUNT MANAGEMENT
-# =========================
-
-@dp.callback_query(F.data == "acctadmin:add")
-async def admin_add_account(c: CallbackQuery):
-    if not is_admin(c.from_user.id):
-        await c.answer("غير مسموح لك.", show_alert=True)
+async def on_buy(c: CallbackQuery):
+    code = c.data.split(":", 1)[1]
+    if code not in PRODUCTS or int(PRODUCTS[code]["price"]) <= 0:
+        await c.answer("الباقة غير متاحة حالياً.", show_alert=True)
         return
-
-    await c.message.answer(
-        "➕ إضافة حساب جديد\n\nاختر نوع الحساب:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text="🎮 PUBG Mobile",
-                callback_data="acctadd:pubg"
-            )],
-            [InlineKeyboardButton(
-                text="🎵 TikTok",
-                callback_data="acctadd:tiktok"
-            )]
-        ])
-    )
+    pending[c.from_user.id] = {"step": "tiktok_id", "code": code}
+    await c.message.answer("أرسل TikTok ID أو اسم المستخدم المطلوب شحنه:")
     await c.answer()
 
-
-@dp.callback_query(F.data.startswith("acctadd:"))
-async def choose_account_category(c: CallbackQuery):
-    if not is_admin(c.from_user.id):
-        await c.answer("غير مسموح لك.", show_alert=True)
-        return
-
+async def on_accounts(c: CallbackQuery):
     category = c.data.split(":")[1]
-
-    if category not in ("pubg", "tiktok"):
-        await c.answer("نوع غير صحيح.", show_alert=True)
-        return
-
-    pending[c.from_user.id] = {
-        "step": "account_title",
-        "category": category
-    }
-
-    await c.message.answer("اكتب اسم أو عنوان الحساب:")
+    accounts = await get_accounts(category)
+    name = "PUBG Mobile" if category == "pubg" else "TikTok"
+    if not accounts:
+        await c.message.answer(f"📭 لا توجد حسابات {name} متاحة حالياً.")
+    else:
+        await c.message.answer(f"🔥 الحسابات المتاحة - {name}")
+        for a in accounts:
+            caption = f"🎮 {a[2]}\n\n📝 {a[3] or 'لا يوجد وصف'}\n💰 السعر: {a[4]} جنيه"
+            if a[5]:
+                await c.message.answer_photo(a[5], caption=caption, reply_markup=account_buttons(a[0]))
+            else:
+                await c.message.answer(caption, reply_markup=account_buttons(a[0]))
     await c.answer()
 
+async def on_buy_account(c: CallbackQuery):
+    try:
+        aid = int(c.data.split(":")[1])
+        a = await get_account(aid)
+        if not a or a[6] != "available":
+            await c.answer("الحساب لم يعد متاحاً.", show_alert=True)
+            return
+        rid = await request_account(aid, c.from_user.id, c.from_user.username)
+        if rid is None:
+            await c.answer("الحساب لم يعد متاحاً.", show_alert=True)
+            return
+        await c.message.answer(f"✅ استلمنا طلبك رقم #{rid} للحساب {a[2]} بسعر {a[4]} جنيه. الإدارة هتتواصل معاك.")
+        await notify_admins(c.bot,
+            f"🛒 طلب حساب جديد #{rid}\nالحساب: {a[2]}\nالسعر: {a[4]} جنيه\nالعميل: {c.from_user.id}\nUsername: @{c.from_user.username or 'غير متوفر'}",
+            reply_markup=kb([[InlineKeyboardButton(text="📩 مراسلة العميل", callback_data=f"reply:{c.from_user.id}")],
+                             [InlineKeyboardButton(text="✅ تحديد كمباع", callback_data=f"accsold:{aid}")]]))
+        await c.answer("تم إرسال الطلب.")
+    except Exception:
+        log.exception("Account request failed")
+        await c.answer("حصل خطأ، حاول مرة أخرى.", show_alert=True)
 
-@dp.callback_query(F.data.startswith("acctadmin:"))
-async def admin_account_sections(c: CallbackQuery):
+async def on_support(c: CallbackQuery):
+    support_mode.add(c.from_user.id)
+    await c.message.answer("📞 اكتب رسالتك هنا، وسيتم إرسالها للإدارة. لإلغاء الدعم اكتب /cancel")
+    await c.answer()
+
+async def on_admin(c: CallbackQuery):
     if not is_admin(c.from_user.id):
         await c.answer("غير مسموح لك.", show_alert=True)
         return
-
     section = c.data.split(":")[1]
+    if section == "stats":
+        s = await get_dashboard_stats()
+        await c.message.answer(
+            f"📊 الإحصائيات\nالطلبات: {s['orders']}\nالمعلقة: {s['pending']}\nالمدفوعة: {s['paid']}\nالعملاء: {s['customers']}\nالحسابات: {s['accounts']}")
+    elif section in ("orders", "pending"):
+        orders = await get_orders(40, "pending" if section == "pending" else None)
+        if not orders:
+            await c.message.answer("لا توجد طلبات.")
+        for o in orders:
+            await c.message.answer(
+                f"طلب #{o[0]}\nالعميل: {o[1]}\nTikTok: @{o[3]}\nالكمية: {o[5]} Coins\nالسعر: {o[6]} جنيه\nالدفع: {o[7]}\nالحالة: {o[9]}",
+                reply_markup=receipt_buttons(o[0], o[1]) if o[9] == "pending" else None)
+    elif section == "customers":
+        customers = await get_customers(1000)
+        await c.message.answer(f"👥 عدد العملاء المسجلين: {len(customers)}")
+    await c.answer()
 
-    if section in ("pubg", "tiktok"):
-        accounts = await get_accounts(
-            category=section,
-            available_only=False
-        )
-
+async def on_acctadmin(c: CallbackQuery):
+    if not is_admin(c.from_user.id):
+        await c.answer("غير مسموح لك.", show_alert=True)
+        return
+    section = c.data.split(":")[1]
+    if section == "add":
+        pending[c.from_user.id] = {"step":"account_category"}
+        await c.message.answer("اكتب نوع الحساب: pubg أو tiktok")
+    elif section == "requests":
+        reqs = await get_account_requests(40)
+        if not reqs:
+            await c.message.answer("لا توجد طلبات شراء حسابات.")
+        for r in reqs:
+            await c.message.answer(
+                f"طلب حساب #{r[0]}\nالحساب: {r[7]}\nالنوع: {r[6]}\nالسعر: {r[8]} جنيه\nالعميل: {r[2]}\nالحالة: {r[4]}",
+                reply_markup=kb([[InlineKeyboardButton(text="📩 مراسلة العميل", callback_data=f"reply:{r[2]}")]]))
+    else:
+        accounts = await get_accounts(section, available_only=False)
         if not accounts:
             await c.message.answer("لا توجد حسابات في هذا القسم.")
-            await c.answer()
-            return
-
-        await c.message.answer(
-            "📋 إدارة الحسابات\n"
-            "الحالة: متاح / مباع / مخفي"
-        )
-
-        for account in accounts:
-            account_id = account[0]
-            category_name = (
-                "PUBG Mobile" if account[1] == "pubg"
-                else "TikTok"
-            )
-
-            text = (
-                f"#{account_id} - {category_name}\n"
-                f"الحساب: {account[2]}\n"
-                f"السعر: {account[4]} جنيه\n"
-                f"الحالة: {account[6]}"
-            )
-
-            if account[5]:
-                await c.message.answer_photo(
-                    account[5],
-                    caption=text,
-                    reply_markup=account_admin_buttons(
-                        account_id, account[6]
-                    )
-                )
+        for a in accounts:
+            text = f"#{a[0]} — {a[2]}\nالسعر: {a[4]} جنيه\nالحالة: {a[6]}"
+            if a[5]:
+                await c.message.answer_photo(a[5], caption=text, reply_markup=account_admin_buttons(a[0], a[6]))
             else:
-                await c.message.answer(
-                    text,
-                    reply_markup=account_admin_buttons(
-                        account_id, account[6]
-                    )
-                )
-
-    elif section == "requests":
-        requests = await get_account_requests(limit=30)
-
-        if not requests:
-            await c.message.answer("لا توجد طلبات شراء حسابات حتى الآن.")
-        else:
-            for r in requests:
-                await c.message.answer(
-                    f"🛒 طلب شراء حساب #{r[0]}\n\n"
-                    f"الحساب: {r[7]}\n"
-                    f"النوع: {r[6]}\n"
-                    f"السعر: {r[8]} جنيه\n"
-                    f"العميل: {r[2]}\n"
-                    f"Username: @{r[3] or 'غير متوفر'}\n"
-                    f"الحالة: {r[4]}"
-                )
-
+                await c.message.answer(text, reply_markup=account_admin_buttons(a[0], a[6]))
     await c.answer()
 
-
-@dp.callback_query(F.data.startswith("accsold:"))
-async def mark_account_sold(c: CallbackQuery):
+async def on_account_status(c: CallbackQuery):
     if not is_admin(c.from_user.id):
         await c.answer("غير مسموح لك.", show_alert=True)
         return
-
-    account_id = int(c.data.split(":")[1])
-    account = await get_account(account_id)
-
-    if not account:
-        await c.answer("الحساب غير موجود.", show_alert=True)
-        return
-
-    await set_account_status(account_id, "sold")
-
-    await c.message.answer(
-        f"✅ تم تحديد الحساب #{account_id} كمباع."
-    )
+    action, raw = c.data.split(":")
+    status = {"accsold":"sold", "acchide":"hidden", "accavailable":"available"}[action]
+    await set_account_status(int(raw), status)
     await c.answer("تم تحديث حالة الحساب.")
+    await c.message.answer("✅ تم تحديث حالة الحساب.")
 
-
-@dp.callback_query(F.data.startswith("acchide:"))
-async def hide_account(c: CallbackQuery):
-    if not is_admin(c.from_user.id):
-        await c.answer("غير مسموح لك.", show_alert=True)
-        return
-
-    account_id = int(c.data.split(":")[1])
-    await set_account_status(account_id, "hidden")
-
-    await c.message.answer("🙈 تم إخفاء الحساب.")
-    await c.answer()
-
-
-@dp.callback_query(F.data.startswith("accavailable:"))
-async def make_account_available(c: CallbackQuery):
-    if not is_admin(c.from_user.id):
-        await c.answer("غير مسموح لك.", show_alert=True)
-        return
-
-    account_id = int(c.data.split(":")[1])
-    await set_account_status(account_id, "available")
-
-    await c.message.answer("♻️ الحساب أصبح متاحاً للبيع.")
-    await c.answer()
-
-
-# =========================
-# CUSTOMER TEXT INPUT
-# =========================
-
-@dp.message(F.text & ~F.text.startswith("/"))
-async def get_text(m: Message):
-    data = pending.get(m.from_user.id)
-
-    if not data:
-        return
-
-    step = data.get("step")
-
-    if step == "tiktok_id":
-        tiktok_id = m.text.strip().lstrip("@")
-
-        if not 2 <= len(tiktok_id) <= 64:
-            await m.answer("اسم الحساب غير صحيح. حاول مرة أخرى.")
-            return
-
-        data["tiktok_id"] = tiktok_id
-        data["step"] = "payment"
-
-        p = PRODUCTS[data["code"]]
-
-        await m.answer(
-            f"✅ الحساب: @{tiktok_id}\n"
-            f"🪙 الباقة: {p['coins']} كوين\n"
-            f"💰 السعر: {p['price']} جنيه\n\n"
-            "اختر وسيلة الدفع:",
-            reply_markup=payment_methods()
-        )
-
-    elif step == "account_title":
-        data["title"] = m.text.strip()
-        data["step"] = "account_description"
-        await m.answer(
-            "اكتب وصف الحساب ومميزاته.\n"
-            "لو مش عايز تضيف وصف اكتب: بدون"
-        )
-
-    elif step == "account_description":
-        description = m.text.strip()
-        data["description"] = (
-            "" if description == "بدون" else description
-        )
-        data["step"] = "account_price"
-        await m.answer("اكتب سعر الحساب بالجنيه المصري، أرقام فقط:")
-
-    elif step == "account_price":
-        try:
-            price = int(m.text.strip())
-            if price <= 0:
-                raise ValueError
-        except ValueError:
-            await m.answer("السعر غير صحيح. اكتب رقماً أكبر من صفر.")
-            return
-
-        data["price"] = price
-        data["step"] = "account_photo"
-
-        await m.answer(
-            "📸 ابعت صورة الحساب الآن.\n"
-            "أو اكتب «تخطي» لإضافة الحساب بدون صورة."
-        )
-
-    elif step == "account_photo":
-        if m.text.strip() != "تخطي":
-            await m.answer(
-                "أرسل صورة للحساب أو اكتب «تخطي»."
-            )
-            return
-
-        await save_new_account(m, data, None)
-
-
-async def save_new_account(m, data, photo_file_id):
-    try:
-        account_id = await add_account(
-            category=data["category"],
-            title=data["title"],
-            description=data["description"],
-            price=data["price"],
-            photo_file_id=photo_file_id
-        )
-
-        pending.pop(m.from_user.id, None)
-
-        category_name = (
-            "PUBG Mobile" if data["category"] == "pubg"
-            else "TikTok"
-        )
-
-        await m.answer(
-            "✅ تمت إضافة الحساب بنجاح.\n\n"
-            f"رقم الحساب: #{account_id}\n"
-            f"القسم: {category_name}\n"
-            f"الاسم: {data['title']}\n"
-            f"السعر: {data['price']} جنيه"
-        )
-
-    except Exception as e:
-        print("Add account error:", e)
-        await m.answer("حدث خطأ أثناء إضافة الحساب. حاول مرة أخرى.")
-
-
-# =========================
-# PAYMENT METHODS
-# =========================
-
-@dp.callback_query(F.data.startswith("pay:"))
-async def choose_payment(c: CallbackQuery):
+async def on_payment(c: CallbackQuery):
     data = pending.get(c.from_user.id)
-
     if not data or data.get("step") != "payment":
-        await c.answer("ابدأ طلب جديد.", show_alert=True)
+        await c.answer("ابدأ طلب شحن جديد.", show_alert=True)
         return
-
     method = c.data.split(":")[1]
-
-    if method in ("bank", "gateway"):
-        await c.answer(
-            "هذه الوسيلة قيد التجهيز حالياً.",
-            show_alert=True
-        )
-        return
-
-    method_name = (
-        "فودافون كاش" if method == "vodafone"
-        else "إنستا باي"
-    )
-
-    data["payment_method"] = method_name
+    data["payment_method"] = "فودافون كاش" if method == "vodafone" else "إنستا باي"
     data["step"] = "receipt"
-
-    numbers = "\n".join(
-        f"📱 {number}" for number in CASH_NUMBERS
-    )
-
-    await c.message.answer(
-        f"💳 وسيلة الدفع: {method_name}\n\n"
-        f"حوّل المبلغ إلى أحد الرقمين:\n\n"
-        f"{numbers}\n\n"
-        "📸 بعد التحويل أرسل صورة الإيصال هنا.\n"
-        "سيتم مراجعة التحويل من الإدارة."
-    )
-
+    nums = "\n".join("📱 " + n for n in CASH_NUMBERS)
+    await c.message.answer(f"حوّل المبلغ إلى أحد الأرقام:\n{nums}\n\nثم أرسل صورة الإيصال هنا.")
     await c.answer()
 
+async def on_approval(c: CallbackQuery):
+    if not is_admin(c.from_user.id):
+        await c.answer("غير مسموح لك.", show_alert=True)
+        return
+    action, oid_s, uid_s = c.data.split(":")
+    oid, uid = int(oid_s), int(uid_s)
+    order = await get_order(oid)
+    if not order or order[9] != "pending":
+        await c.answer("الطلب غير موجود أو تمت مراجعته.", show_alert=True)
+        return
+    if action == "approve":
+        await confirm_payment(oid)
+        status_text = "تم تأكيد الدفع بنجاح."
+        customer_text = f"✅ تم تأكيد الدفع للطلب #{oid}. سيتم تنفيذ طلبك."
+    else:
+        await reject_payment(oid)
+        status_text = "تم رفض الإيصال."
+        customer_text = f"❌ تم رفض إيصال الطلب #{oid}. تواصل مع الدعم للمراجعة."
+    try:
+        await c.bot.send_message(uid, customer_text)
+    except Exception:
+        pass
+    await c.message.answer(status_text)
+    await c.answer("تم تحديث الطلب.")
 
-# =========================
-# RECEIPT AND ACCOUNT PHOTO
-# =========================
+async def on_reply(c: CallbackQuery):
+    if not is_admin(c.from_user.id):
+        await c.answer("غير مسموح لك.", show_alert=True)
+        return
+    uid = int(c.data.split(":")[1])
+    reply_targets[c.from_user.id] = uid
+    await c.message.answer(f"اكتب رسالتك للعميل {uid}:")
+    await c.answer()
 
-@dp.message(F.photo)
-async def receive_photo(m: Message):
-    data = pending.get(m.from_user.id)
+async def on_broadcast(c: CallbackQuery):
+    if not is_admin(c.from_user.id):
+        await c.answer("غير مسموح لك.", show_alert=True)
+        return
+    pending[c.from_user.id] = {"step":"broadcast"}
+    await c.message.answer("أرسل نص الإعلان الجماعي الآن. اكتب /cancel للإلغاء.")
+    await c.answer()
 
-    if data and data.get("step") == "account_photo":
-        await save_new_account(
-            m,
-            data,
-            m.photo[-1].file_id
-        )
+async def on_text(m: Message):
+    uid = m.from_user.id
+    txt = (m.text or "").strip()
+    if txt == "/cancel":
+        pending.pop(uid, None)
+        support_mode.discard(uid)
+        reply_targets.pop(uid, None)
+        await m.answer("تم الإلغاء.")
         return
 
+    if uid in reply_targets and is_admin(uid):
+        customer_id = reply_targets.pop(uid)
+        try:
+            await m.bot.send_message(customer_id, f"📩 رسالة من إدارة HAMO STORE:\n\n{txt}")
+            await save_support_message(customer_id, txt, "admin", uid)
+            await m.answer("✅ تم إرسال الرد للعميل.")
+        except Exception:
+            await m.answer("تعذر إرسال الرسالة لهذا العميل.")
+        return
+
+    data = pending.get(uid)
+    if data:
+        step = data.get("step")
+        if step == "broadcast" and is_admin(uid):
+            customers = await get_customers(100000)
+            sent = failed = 0
+            for customer_id, _ in customers:
+                try:
+                    await m.bot.send_message(customer_id, f"📢 HAMO STORE\n\n{txt}")
+                    sent += 1
+                except (TelegramForbiddenError, TelegramBadRequest):
+                    failed += 1
+                except Exception:
+                    failed += 1
+            pending.pop(uid, None)
+            await m.answer(f"انتهى الإرسال.\nتم الإرسال: {sent}\nتعذر الإرسال: {failed}")
+            return
+        if step == "account_category" and is_admin(uid):
+            category = txt.lower()
+            if category not in ("pubg", "tiktok"):
+                await m.answer("اكتب pubg أو tiktok فقط.")
+                return
+            data.update(step="account_title", category=category)
+            await m.answer("اكتب اسم أو عنوان الحساب:")
+            return
+        if step == "account_title":
+            data.update(step="account_description", title=txt)
+            await m.answer("اكتب وصف الحساب أو اكتب: بدون")
+            return
+        if step == "account_description":
+            data.update(step="account_price", description="" if txt == "بدون" else txt)
+            await m.answer("اكتب السعر بالجنيه المصري (أرقام فقط):")
+            return
+        if step == "account_price":
+            try:
+                price = int(txt)
+                if price <= 0: raise ValueError
+            except ValueError:
+                await m.answer("اكتب سعراً صحيحاً أكبر من صفر.")
+                return
+            data.update(step="account_photo", price=price)
+            await m.answer("أرسل صورة الحساب أو اكتب تخطي:")
+            return
+        if step == "account_photo":
+            if txt != "تخطي":
+                await m.answer("أرسل صورة أو اكتب تخطي.")
+                return
+            await finish_account(m, data, None)
+            return
+        if step == "tiktok_id":
+            target = txt.lstrip("@")
+            if not 2 <= len(target) <= 64:
+                await m.answer("TikTok ID غير صحيح، حاول مرة أخرى.")
+                return
+            data.update(step="payment", tiktok_id=target)
+            p = PRODUCTS[data["code"]]
+            await m.answer(f"الحساب: @{target}\nالباقة: {p['coins']} كوين\nالسعر: {p['price']} جنيه\nاختر وسيلة الدفع:", reply_markup=payment_methods())
+            return
+    if uid in support_mode:
+        support_mode.discard(uid)
+        await save_support_message(uid, txt, "customer")
+        await notify_admins(m.bot, f"📞 رسالة دعم جديدة\nالعميل: {uid}\nUsername: @{m.from_user.username or 'غير متوفر'}\n\n{txt}",
+            reply_markup=kb([[InlineKeyboardButton(text="↩️ الرد على العميل", callback_data=f"reply:{uid}")]]))
+        await m.answer("✅ وصلت رسالتك للإدارة.")
+        return
+
+async def finish_account(m, data, photo_id):
+    try:
+        aid = await add_account(data["category"], data["title"], data["description"], data["price"], photo_id)
+        pending.pop(m.from_user.id, None)
+        await m.answer(f"✅ تمت إضافة الحساب بنجاح. رقم الحساب: #{aid}")
+    except Exception:
+        log.exception("Could not save account")
+        await m.answer("حدث خطأ أثناء إضافة الحساب.")
+
+async def on_photo(m: Message):
+    data = pending.get(m.from_user.id)
+    photo_id = m.photo[-1].file_id
+    if data and data.get("step") == "account_photo":
+        await finish_account(m, data, photo_id)
+        return
     if not data or data.get("step") != "receipt":
         return
-
     p = PRODUCTS[data["code"]]
-    receipt_id = m.photo[-1].file_id
-
     try:
-        order_id = await add_order(
-            m.from_user.id,
-            m.from_user.username,
-            data["tiktok_id"],
-            p,
-            data["payment_method"],
-            receipt_id
-        )
-
+        oid = await add_order(m.from_user.id, m.from_user.username, data["tiktok_id"], p, data["payment_method"], photo_id)
         pending.pop(m.from_user.id, None)
-
-        await m.answer(
-            f"✅ تم استلام الإيصال.\n\n"
-            f"رقم الطلب: #{order_id}\n"
-            f"الباقة: {p['coins']} كوين\n"
-            f"السعر: {p['price']} جنيه\n"
-            "الحالة: بانتظار مراجعة الدفع."
-        )
-
-        caption = (
-            f"🧾 طلب جديد #{order_id}\n\n"
-            f"العميل: {m.from_user.id}\n"
-            f"Username: @{m.from_user.username or 'غير متوفر'}\n"
-            f"TikTok: @{data['tiktok_id']}\n"
-            f"الباقة: {p['coins']} Coins\n"
-            f"السعر: {p['price']} جنيه\n"
-            f"الدفع: {data['payment_method']}"
-        )
-
+        await m.answer(f"✅ تم استلام الإيصال. رقم الطلب: #{oid}\nالحالة: بانتظار مراجعة الإدارة.")
+        caption = (f"🧾 طلب جديد #{oid}\nالعميل: {m.from_user.id}\n"
+                   f"Username: @{m.from_user.username or 'غير متوفر'}\nTikTok: @{data['tiktok_id']}\n"
+                   f"الباقة: {p['coins']} Coins\nالسعر: {p['price']} جنيه\nالدفع: {data['payment_method']}")
         for aid in ADMIN_IDS:
             try:
-                await bot.send_photo(
-                    aid,
-                    receipt_id,
-                    caption=caption,
-                    reply_markup=receipt_buttons(
-                        order_id,
-                        m.from_user.id
-                    )
-                )
-            except Exception as e:
-                print("Admin receipt notification error:", e)
+                await m.bot.send_photo(aid, photo_id, caption=caption,
+                                       reply_markup=receipt_buttons(oid, m.from_user.id))
+            except Exception:
+                log.exception("Receipt notification failed")
+    except Exception:
+        log.exception("Receipt processing failed")
+        await m.answer("حدث خطأ أثناء تسجيل الإيصال. حاول مرة أخرى.")
 
-    except Exception as e:
-        print("Receipt error:", e)
-        await m.answer("حدث خطأ. حاول مرة أخرى أو تواصل مع الدعم.")
+async def main():
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN غير مضبوط في Environment Variables")
+    if not ADMIN_IDS:
+        raise RuntimeError("ADMIN_IDS غير مضبوط. ضع Telegram user ID واحداً على الأقل.")
+    await init_db()
+    bot = Bot(BOT_TOKEN)
+    dp = Dispatcher()
 
+    dp.message.register(start, CommandStart())
+    dp.message.register(admin_start, Command("admin"))
+    dp.message.register(on_photo, F.photo)
+    dp.message.register(on_text, F.text)
 
-# =========================
-# ADMIN DASHBOARD
-# =========================
+    dp.callback_query.register(on_catalog, F.data == "catalog")
+    dp.callback_query.register(on_buy, F.data.startswith("buy:"))
+    dp.callback_query.register(on_accounts, F.data.startswith("accounts:"))
+    dp.callback_query.register(on_buy_account, F.data.startswith("buyacc:"))
+    dp.callback_query.register(on_support, F.data == "support")
+    dp.callback_query.register(on_admin, F.data.startswith("admin:"))
+    dp.callback_query.register(on_acctadmin, F.data.startswith("acctadmin:"))
+    dp.callback_query.register(on_account_status, F.data.startswith(("accsold:", "acchide:", "accavailable:")))
+    dp.callback_query.register(on_payment, F.data.startswith("pay:"))
+    dp.callback_query.register(on_approval, F.data.startswith(("approve:", "reject:")))
+    dp.callback_query.register(on_reply, F.data.startswith("reply:"))
+    dp.callback_query.register(on_broadcast, F.data == "broadcast")
 
-@dp.message(Command("admin"))
-async def admin(m: Message):
+    log.info("%s is running", STORE_NAME)
+    try:
+        await dp.start_polling(bot, close_bot_session=True)
+    finally:
+        await bot.session.close()
+
+async def admin_start(m: Message):
     if not is_admin(m.from_user.id):
         return
-
     pending.pop(m.from_user.id, None)
+    await m.answer("🛠️ HAMO STORE — لوحة الإدارة", reply_markup=admin_keyboard())
 
-    await m.answer(
-        "🛠️ HAMO STORE\n"
-        "لوحة تحكم الإدارة\n\n"
-        "اختر القسم المطلوب:",
-        reply_markup=admin_keyboard()
-    )
-
-
-@dp.callback_query(F.data.startswith("admin:"))
-async def admin_sections(c: CallbackQuery):
-    if not is_admin(c.from_user.id):
-        await c.answer("غير مسموح لك.", show_alert=True)
-        return
-
-    section
+if __name__ == "__main__":
+    asyncio.run(main())
