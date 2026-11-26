@@ -10,6 +10,13 @@ async def init_db():
             price INTEGER NOT NULL
         )""")
         await db.execute("""
+        CREATE TABLE IF NOT EXISTS custom_products (
+            product_code TEXT PRIMARY KEY,
+            category TEXT NOT NULL,
+            coins INTEGER NOT NULL,
+            price INTEGER NOT NULL
+        )""")
+        await db.execute("""
         CREATE TABLE IF NOT EXISTS product_status (
             product_code TEXT PRIMARY KEY,
             enabled INTEGER NOT NULL DEFAULT 1
@@ -226,6 +233,34 @@ async def init_product_statuses(products):
     async with aiosqlite.connect(DB_PATH) as db:
         for code in products:
             await db.execute("INSERT OR IGNORE INTO product_status(product_code, enabled) VALUES(?, 1)", (code,))
+        await db.commit()
+
+async def add_custom_product(category, product):
+    category = str(category).strip().lower()
+    if category not in ("tiktok", "pubg"):
+        raise ValueError("نوع المنتج غير صحيح.")
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT 1 FROM custom_products WHERE product_code=?", (product["code"],))
+        if await cur.fetchone():
+            raise ValueError("الباقة موجودة بالفعل. غيّر الكمية أو احذف الباقة القديمة.")
+        await db.execute(
+            "INSERT INTO custom_products(product_code, category, coins, price) VALUES(?,?,?,?)",
+            (product["code"], category, int(product["coins"]), int(product["price"])))
+        await db.execute("INSERT OR REPLACE INTO product_status(product_code, enabled) VALUES(?,1)", (product["code"],))
+        await db.execute("INSERT OR REPLACE INTO product_prices(product_code, price) VALUES(?,?)", (product["code"], int(product["price"])))
+        await db.commit()
+
+async def get_custom_products():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT category, product_code, coins, price FROM custom_products ORDER BY coins")
+        rows = await cur.fetchall()
+        return [(category, {"code": code, "coins": coins, "price": price}) for category, code, coins, price in rows]
+
+async def delete_custom_product(product_code):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM custom_products WHERE product_code=?", (product_code,))
+        await db.execute("DELETE FROM product_prices WHERE product_code=?", (product_code,))
+        await db.execute("DELETE FROM product_status WHERE product_code=?", (product_code,))
         await db.commit()
 
 async def get_product_statuses():
