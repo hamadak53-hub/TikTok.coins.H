@@ -21,22 +21,21 @@ def start(message):
 
     bot.send_message(
         message.chat.id,
-        "أهلاً بيك في TikTok Coins! 🎉\n\n"
-        "اختار الخدمة اللي محتاجها من القائمة:",
+        "اختار الخدمة اللي محتاجها من الأزرار:",
         reply_markup=keyboard
     )
 
 @bot.message_handler(func=lambda message: True)
 def handle_service(message):
     if message.text == "🪙 شحن عملات":
-        bot.reply_to(message, "🪙 اخترت شحن عملات.\nهنبلغك بالتفاصيل والسعر قريبًا.")
+        bot.reply_to(message, "اخترت شحن عملات.")
     elif message.text == "🎮 شراء حساب":
-        bot.reply_to(message, "🎮 اخترت شراء حساب.\nحدد طلبك من خلال التواصل مع الإدارة.")
+        bot.reply_to(message, "اخترت شراء حساب.")
     elif message.text == "🎯 شحن ألعاب":
-        bot.reply_to(message, "🎯 اخترت شحن ألعاب.\nهنبلغك بالتفاصيل قريبًا.")
+        bot.reply_to(message, "اخترت شحن ألعاب.")
     elif message.text == "🛟 الدعم":
-        bot.reply_to(message, "🛟 أنت الآن في قسم الدعم. تفاصيل التواصل هنضيفها لاحقًا.")
+        bot.reply_to(message, "اخترت الدعم.")
     else:
-        bot.reply_to(message, "من فضلك اختار خدمة من الأزرار الموجودة في القائمة.")
+        bot.reply_to(message, "اختار خدمة من الأزرار الموجودة.")
 
 bot.infinity_polling()
