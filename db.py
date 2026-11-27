@@ -53,6 +53,19 @@ async def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )""")
         await db.execute("""
+        CREATE TABLE IF NOT EXISTS account_submissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            username TEXT,
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            price INTEGER NOT NULL,
+            photo_file_id TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )""")
+        await db.execute("""
         CREATE TABLE IF NOT EXISTS account_requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             account_id INTEGER NOT NULL,
@@ -272,3 +285,49 @@ async def set_product_status(product_code, enabled):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT INTO product_status(product_code, enabled) VALUES(?, ?) ON CONFLICT(product_code) DO UPDATE SET enabled=excluded.enabled", (product_code, 1 if enabled else 0))
         await db.commit()
+
+
+async def add_account_submission(user_id, username, category, title, description, price, photo_file_id=None):
+    category = str(category).strip().lower()
+    if category not in ("pubg", "tiktok"):
+        raise ValueError("category must be pubg or tiktok")
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("""
+        INSERT INTO account_submissions(user_id, username, category, title, description, price, photo_file_id)
+        VALUES(?,?,?,?,?,?,?)
+        """, (user_id, username, category, title, description, int(price), photo_file_id))
+        await db.commit()
+        return cur.lastrowid
+
+async def get_pending_account_submissions(limit=40):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("""
+        SELECT id, user_id, username, category, title, description, price, photo_file_id, status
+        FROM account_submissions WHERE status='pending' ORDER BY id DESC LIMIT ?
+        """, (limit,))
+        return await cur.fetchall()
+
+async def review_account_submission(submission_id, approve=False):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        cur = await db.execute("""
+        SELECT user_id, category, title, description, price, photo_file_id, status
+        FROM account_submissions WHERE id=?
+        """, (submission_id,))
+        row = await cur.fetchone()
+        if not row or row[6] != "pending":
+            await db.rollback()
+            return None
+        account_id = None
+        if approve:
+            cur = await db.execute("""
+            INSERT INTO accounts(category, title, description, price, photo_file_id, status)
+            VALUES(?,?,?,?,?,'available')
+            """, row[1:6])
+            account_id = cur.lastrowid
+            status = "approved"
+        else:
+            status = "rejected"
+        await db.execute("UPDATE account_submissions SET status=? WHERE id=?", (status, submission_id))
+        await db.commit()
+        return {"user_id": row[0], "account_id": account_id, "status": status}
