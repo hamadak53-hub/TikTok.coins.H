@@ -14,6 +14,7 @@ from db import (
     reject_payment, get_orders, get_customers, get_dashboard_stats,
     add_account, get_accounts, get_account, request_account,
     get_account_requests, set_account_status, save_support_message,
+    add_account_submission, get_pending_account_submissions, review_account_submission,
     init_product_prices, get_product_prices, set_product_price,
     init_product_statuses, get_product_statuses, set_product_status,
     add_custom_product, get_custom_products, delete_custom_product
@@ -39,6 +40,7 @@ def home():
         [InlineKeyboardButton(text="🎮 شحن شدات PUBG UC", callback_data="uc_catalog")],
         [InlineKeyboardButton(text="🎮 حسابات PUBG", callback_data="accounts:pubg")],
         [InlineKeyboardButton(text="🎵 حسابات TikTok", callback_data="accounts:tiktok")],
+        [InlineKeyboardButton(text="💼 اعرض حسابك للبيع", callback_data="sellaccount")],
         [InlineKeyboardButton(text="📞 الدعم", callback_data="support")],
         [InlineKeyboardButton(text="❌ إلغاء", callback_data="cancel")]
     ])
@@ -53,6 +55,7 @@ def admin_keyboard():
         [InlineKeyboardButton(text="🎮 PUBG", callback_data="acctadmin:pubg"),
          InlineKeyboardButton(text="🎵 TikTok", callback_data="acctadmin:tiktok")],
         [InlineKeyboardButton(text="📨 طلبات الحسابات", callback_data="acctadmin:requests")],
+        [InlineKeyboardButton(text="📝 مراجعة عروض العملاء", callback_data="acctadmin:submissions")],
         [InlineKeyboardButton(text="💰 تعديل أسعار الشحن", callback_data="admin:prices")],
         [InlineKeyboardButton(text="🧰 إدارة المنتجات", callback_data="admin:products")],
         [InlineKeyboardButton(text="📢 رسالة جماعية", callback_data="broadcast")]
@@ -219,6 +222,36 @@ async def on_buy_account(c: CallbackQuery):
         log.exception("Account request failed")
         await c.answer("حصل خطأ، حاول مرة أخرى.", show_alert=True)
 
+async def on_sell_account(c: CallbackQuery):
+    pending[c.from_user.id] = {"step": "sell_category"}
+    await c.message.answer(
+        "💼 اعرض حسابك للبيع على HAMO STORE\\n\\nاختار نوع الحساب بكتابة pubg أو tiktok:",
+        reply_markup=cancel_markup()
+    )
+    await c.answer()
+
+async def on_sell_submission_review(c: CallbackQuery):
+    if not is_admin(c.from_user.id):
+        await c.answer("غير مسموح لك.", show_alert=True)
+        return
+    action, raw_id = c.data.split(":")
+    result = await review_account_submission(int(raw_id), approve=(action == "sellapprove"))
+    if not result:
+        await c.answer("العرض غير موجود أو تمت مراجعته بالفعل.", show_alert=True)
+        return
+    uid = result["user_id"]
+    if action == "sellapprove":
+        message = f"🎉 تمت الموافقة على عرض حسابك!\\nرقم الحساب في المتجر: #{result['account_id']}\\nأصبح متاحاً للعملاء."
+        await c.message.answer(f"✅ تمت الموافقة على العرض وإضافته للمتجر برقم #{result['account_id']}.")
+    else:
+        message = "نعتذر، لم تتم الموافقة على عرض حسابك للبيع. يمكنك التواصل مع الدعم لمعرفة التفاصيل."
+        await c.message.answer("تم رفض العرض.")
+    try:
+        await c.bot.send_message(uid, message)
+    except Exception:
+        log.exception("Could not notify account seller %s", uid)
+    await c.answer("تمت مراجعة العرض.")
+
 async def on_support(c: CallbackQuery):
     support_mode.add(c.from_user.id)
     await c.message.answer("📞 اكتب رسالتك هنا، وسيتم إرسالها للإدارة:", reply_markup=cancel_markup())
@@ -275,6 +308,24 @@ async def on_acctadmin(c: CallbackQuery):
     if section == "add":
         pending[c.from_user.id] = {"step":"account_category"}
         await c.message.answer("اكتب نوع الحساب: pubg أو tiktok", reply_markup=cancel_markup())
+    elif section == "submissions":
+        submissions = await get_pending_account_submissions(40)
+        if not submissions:
+            await c.message.answer("لا توجد عروض حسابات جديدة للمراجعة.")
+        for s in submissions:
+            sid, seller_id, username, category, title, description, price, photo_id, status = s
+            category_name = "TikTok" if category == "tiktok" else "PUBG"
+            caption = (f"📝 عرض حساب للبيع #{sid}\\nالنوع: {category_name}\\n"
+                       f"العنوان: {title}\\nالوصف: {description or 'بدون وصف'}\\n"
+                       f"السعر المطلوب: {price} جنيه\\nالبائع: {seller_id}\\n"
+                       f"Username: @{username or 'غير متوفر'}\\n\\n"
+                       "راجع العرض قبل الموافقة؛ الموافقة ستنشره مباشرة في المتجر.")
+            markup = kb([[InlineKeyboardButton(text="✅ موافقة ونشر", callback_data=f"sellapprove:{sid}"),
+                          InlineKeyboardButton(text="❌ رفض", callback_data=f"sellreject:{sid}")]])
+            if photo_id:
+                await c.message.answer_photo(photo_id, caption=caption, reply_markup=markup)
+            else:
+                await c.message.answer(caption, reply_markup=markup)
     elif section == "requests":
         reqs = await get_account_requests(40)
         if not reqs:
@@ -560,6 +611,39 @@ async def on_text(m: Message):
             pending.pop(uid, None)
             await m.answer(f"انتهى الإرسال.\nتم الإرسال: {sent}\nتعذر الإرسال: {failed}")
             return
+        if step == "sell_category":
+            category = txt.lower()
+            if category not in ("pubg", "tiktok"):
+                await m.answer("اكتب pubg أو tiktok فقط.", reply_markup=cancel_markup())
+                return
+            data.update(step="sell_title", category=category)
+            await m.answer("اكتب اسم أو عنوان الحساب المعروض للبيع:")
+            return
+        if step == "sell_title":
+            data.update(step="sell_description", title=txt)
+            await m.answer("اكتب وصف الحساب ومميزاته، أو اكتب: بدون")
+            return
+        if step == "sell_description":
+            data.update(step="sell_price", description="" if txt.lower() == "بدون" else txt)
+            await m.answer("اكتب السعر المطلوب بالجنيه المصري (أرقام فقط):")
+            return
+        if step == "sell_price":
+            try:
+                price = int(txt.replace(",", "").replace("٬", ""))
+                if price <= 0 or price > 100000000:
+                    raise ValueError
+            except ValueError:
+                await m.answer("السعر غير صحيح. اكتب رقماً أكبر من صفر.")
+                return
+            data.update(step="sell_photo", price=price)
+            await m.answer("أرسل صورة للحساب، أو اكتب تخطي إذا لا تريد إضافة صورة.")
+            return
+        if step == "sell_photo":
+            if txt != "تخطي":
+                await m.answer("أرسل صورة أو اكتب تخطي.")
+                return
+            await finish_account_submission(m, data, None)
+            return
         if step == "account_category" and is_admin(uid):
             category = txt.lower()
             if category not in ("pubg", "tiktok"):
@@ -623,6 +707,37 @@ async def on_text(m: Message):
         await m.answer("✅ وصلت رسالتك للإدارة.")
         return
 
+async def finish_account_submission(m, data, photo_id):
+    try:
+        sid = await add_account_submission(
+            m.from_user.id, m.from_user.username, data["category"],
+            data["title"], data.get("description", ""), data["price"], photo_id
+        )
+        pending.pop(m.from_user.id, None)
+        await m.answer(
+            f"✅ استلمنا عرضك رقم #{sid} بنجاح.\\n"
+            "الإدارة هتراجع بيانات الحساب، وهيتم إبلاغك بالقرار. "
+            "مش هيظهر في المتجر إلا بعد الموافقة."
+        )
+        category_name = "TikTok" if data["category"] == "tiktok" else "PUBG"
+        caption = (f"📝 عرض حساب جديد للبيع #{sid}\\nالنوع: {category_name}\\n"
+                   f"العنوان: {data['title']}\\nالوصف: {data.get('description') or 'بدون وصف'}\\n"
+                   f"السعر المطلوب: {data['price']} جنيه\\nالبائع: {m.from_user.id}\\n"
+                   f"Username: @{m.from_user.username or 'غير متوفر'}")
+        markup = kb([[InlineKeyboardButton(text="✅ موافقة ونشر", callback_data=f"sellapprove:{sid}"),
+                      InlineKeyboardButton(text="❌ رفض", callback_data=f"sellreject:{sid}")]])
+        for admin_id in ADMIN_IDS:
+            try:
+                if photo_id:
+                    await m.bot.send_photo(admin_id, photo_id, caption=caption, reply_markup=markup)
+                else:
+                    await m.bot.send_message(admin_id, caption, reply_markup=markup)
+            except Exception:
+                log.exception("Could not notify admin about account submission %s", sid)
+    except Exception:
+        log.exception("Could not save account submission")
+        await m.answer("حصل خطأ أثناء إرسال العرض. حاول مرة أخرى.")
+
 async def finish_account(m, data, photo_id):
     try:
         category = str(data["category"]).strip().lower()
@@ -642,6 +757,9 @@ async def finish_account(m, data, photo_id):
 async def on_photo(m: Message):
     data = pending.get(m.from_user.id)
     photo_id = m.photo[-1].file_id
+    if data and data.get("step") == "sell_photo":
+        await finish_account_submission(m, data, photo_id)
+        return
     if data and data.get("step") == "account_photo":
         await finish_account(m, data, photo_id)
         return
@@ -740,6 +858,8 @@ async def main():
     dp.callback_query.register(on_buy_uc, F.data.startswith("buyuc:"))
     dp.callback_query.register(on_buy, F.data.startswith("buy:"))
     dp.callback_query.register(on_accounts, F.data.startswith("accounts:"))
+    dp.callback_query.register(on_sell_account, F.data == "sellaccount")
+    dp.callback_query.register(on_sell_submission_review, F.data.startswith(("sellapprove:", "sellreject:")))
     dp.callback_query.register(on_buy_account, F.data.startswith("buyacc:"))
     dp.callback_query.register(on_support, F.data == "support")
     dp.callback_query.register(on_admin, F.data.startswith("admin:"))
