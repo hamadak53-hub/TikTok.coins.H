@@ -121,7 +121,7 @@ async def on_home(c: CallbackQuery):
     reply_targets.pop(uid, None)
     await c.answer()
     await c.message.answer(
-        f"🖤 أهلاً بك في {STORE_NAME}\\nاختار الخدمة:",
+        f"🖤 أهلاً بك في {STORE_NAME}\nاختار الخدمة:",
         reply_markup=home()
     )
 
@@ -225,7 +225,7 @@ async def on_buy_account(c: CallbackQuery):
 async def on_sell_account(c: CallbackQuery):
     pending[c.from_user.id] = {"step": "sell_category"}
     await c.message.answer(
-        "💼 اعرض حسابك للبيع على HAMO STORE\\n\\nاختار نوع الحساب بكتابة pubg أو tiktok:",
+        "💼 اعرض حسابك للبيع على HAMO STORE\n\nاختار نوع الحساب بكتابة pubg أو tiktok:",
         reply_markup=cancel_markup()
     )
     await c.answer()
@@ -241,7 +241,7 @@ async def on_sell_submission_review(c: CallbackQuery):
         return
     uid = result["user_id"]
     if action == "sellapprove":
-        message = f"🎉 تمت الموافقة على عرض حسابك!\\nرقم الحساب في المتجر: #{result['account_id']}\\nأصبح متاحاً للعملاء."
+        message = f"🎉 تمت الموافقة على عرض حسابك!\nرقم الحساب في المتجر: #{result['account_id']}\nأصبح متاحاً للعملاء."
         await c.message.answer(f"✅ تمت الموافقة على العرض وإضافته للمتجر برقم #{result['account_id']}.")
     else:
         message = "نعتذر، لم تتم الموافقة على عرض حسابك للبيع. يمكنك التواصل مع الدعم لمعرفة التفاصيل."
@@ -315,10 +315,10 @@ async def on_acctadmin(c: CallbackQuery):
         for s in submissions:
             sid, seller_id, username, category, title, description, price, photo_id, status = s
             category_name = "TikTok" if category == "tiktok" else "PUBG"
-            caption = (f"📝 عرض حساب للبيع #{sid}\\nالنوع: {category_name}\\n"
-                       f"العنوان: {title}\\nالوصف: {description or 'بدون وصف'}\\n"
-                       f"السعر المطلوب: {price} جنيه\\nالبائع: {seller_id}\\n"
-                       f"Username: @{username or 'غير متوفر'}\\n\\n"
+            caption = (f"📝 عرض حساب للبيع #{sid}\nالنوع: {category_name}\n"
+                       f"العنوان: {title}\nالوصف: {description or 'بدون وصف'}\n"
+                       f"السعر المطلوب: {price} جنيه\nالبائع: {seller_id}\n"
+                       f"Username: @{username or 'غير متوفر'}\n\n"
                        "راجع العرض قبل الموافقة؛ الموافقة ستنشره مباشرة في المتجر.")
             markup = kb([[InlineKeyboardButton(text="✅ موافقة ونشر", callback_data=f"sellapprove:{sid}"),
                           InlineKeyboardButton(text="❌ رفض", callback_data=f"sellreject:{sid}")]])
@@ -480,9 +480,9 @@ async def on_approval(c: CallbackQuery):
         if str(order[4]).startswith("uc_"):
             await notify_admins(
                 c.bot,
-                f"🎮 مطلوب تنفيذ شحن PUBG UC يدوياً\\nالطلب: #{oid}\\n"
-                f"Player ID: {order[3]}\\nالباقة: {order[5]} UC\\n"
-                f"المبلغ: {order[6]} جنيه\\nتم تأكيد وصول الدفع؛ نفّذ الشحن ثم تواصل مع العميل."
+                f"🎮 مطلوب تنفيذ شحن PUBG UC يدوياً\nالطلب: #{oid}\n"
+                f"Player ID: {order[3]}\nالباقة: {order[5]} UC\n"
+                f"المبلغ: {order[6]} جنيه\nتم تأكيد وصول الدفع؛ نفّذ الشحن ثم تواصل مع العميل."
             )
     else:
         await reject_payment(oid)
@@ -684,8 +684,8 @@ async def on_text(m: Message):
             data.update(step="payment", tiktok_id=player_id, service="pubg_uc")
             p = UC_PRODUCTS[data["code"]]
             await m.answer(
-                f"🎮 خدمة: شحن PUBG UC\\nPlayer ID: {player_id}\\n"
-                f"الباقة: {p['coins']} UC\\nالسعر: {p['price']} جنيه\\n"
+                f"🎮 خدمة: شحن PUBG UC\nPlayer ID: {player_id}\n"
+                f"الباقة: {p['coins']} UC\nالسعر: {p['price']} جنيه\n"
                 "الشحن يتم يدوياً بعد مراجعة الدفع. اختر وسيلة الدفع:",
                 reply_markup=payment_methods()
             )
@@ -715,14 +715,14 @@ async def finish_account_submission(m, data, photo_id):
         )
         pending.pop(m.from_user.id, None)
         await m.answer(
-            f"✅ استلمنا عرضك رقم #{sid} بنجاح.\\n"
+            f"✅ استلمنا عرضك رقم #{sid} بنجاح.\n"
             "الإدارة هتراجع بيانات الحساب، وهيتم إبلاغك بالقرار. "
             "مش هيظهر في المتجر إلا بعد الموافقة."
         )
         category_name = "TikTok" if data["category"] == "tiktok" else "PUBG"
-        caption = (f"📝 عرض حساب جديد للبيع #{sid}\\nالنوع: {category_name}\\n"
-                   f"العنوان: {data['title']}\\nالوصف: {data.get('description') or 'بدون وصف'}\\n"
-                   f"السعر المطلوب: {data['price']} جنيه\\nالبائع: {m.from_user.id}\\n"
+        caption = (f"📝 عرض حساب جديد للبيع #{sid}\nالنوع: {category_name}\n"
+                   f"العنوان: {data['title']}\nالوصف: {data.get('description') or 'بدون وصف'}\n"
+                   f"السعر المطلوب: {data['price']} جنيه\nالبائع: {m.from_user.id}\n"
                    f"Username: @{m.from_user.username or 'غير متوفر'}")
         markup = kb([[InlineKeyboardButton(text="✅ موافقة ونشر", callback_data=f"sellapprove:{sid}"),
                       InlineKeyboardButton(text="❌ رفض", callback_data=f"sellreject:{sid}")]])
@@ -772,18 +772,18 @@ async def on_photo(m: Message):
         await m.answer(f"✅ تم استلام الإيصال. رقم الطلب: #{oid}\nالحالة: بانتظار مراجعة الإدارة.")
         if data.get("service") == "pubg_uc":
             order_details = (
-                f"🎮 الخدمة: شحن PUBG UC\\nPlayer ID: {data['tiktok_id']}\\n"
-                f"الباقة: {p['coins']} UC\\nالسعر: {p['price']} جنيه"
+                f"🎮 الخدمة: شحن PUBG UC\nPlayer ID: {data['tiktok_id']}\n"
+                f"الباقة: {p['coins']} UC\nالسعر: {p['price']} جنيه"
             )
         else:
             order_details = (
-                f"الخدمة: شحن TikTok\\nTikTok ID: @{data['tiktok_id']}\\n"
-                f"الباقة: {p['coins']} Coins\\nالسعر: {p['price']} جنيه"
+                f"الخدمة: شحن TikTok\nTikTok ID: @{data['tiktok_id']}\n"
+                f"الباقة: {p['coins']} Coins\nالسعر: {p['price']} جنيه"
             )
-        caption = (f"🧾 طلب جديد #{oid}\\nالعميل: {m.from_user.id}\\n"
-                   f"Username: @{m.from_user.username or 'غير متوفر'}\\n"
-                   f"{order_details}\\nالدفع: {data['payment_method']}\\n"
-                   f"📌 رقم التحويل المختار: {data.get('recipient_number', 'غير محدد')}\\n"
+        caption = (f"🧾 طلب جديد #{oid}\nالعميل: {m.from_user.id}\n"
+                   f"Username: @{m.from_user.username or 'غير متوفر'}\n"
+                   f"{order_details}\nالدفع: {data['payment_method']}\n"
+                   f"📌 رقم التحويل المختار: {data.get('recipient_number', 'غير محدد')}\n"
                    "⚠️ راجع وصول المبلغ يدوياً. بعد تأكيد الدفع نفّذ شحن UC يدوياً إذا كان الطلب PUBG.")
         for aid in ADMIN_IDS:
             try:
