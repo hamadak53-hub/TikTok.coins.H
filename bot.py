@@ -41,6 +41,7 @@ def home():
         [InlineKeyboardButton(text="🎮 حسابات PUBG", callback_data="accounts:pubg")],
         [InlineKeyboardButton(text="🎵 حسابات TikTok", callback_data="accounts:tiktok")],
         [InlineKeyboardButton(text="💼 اعرض حسابك للبيع", callback_data="sellaccount")],
+        [InlineKeyboardButton(text="🤖 اطلب بوت لمتجرك", callback_data="botstore")],
         [InlineKeyboardButton(text="📞 الدعم", callback_data="support")],
         [InlineKeyboardButton(text="❌ إلغاء", callback_data="cancel")]
     ])
@@ -251,6 +252,40 @@ async def on_sell_submission_review(c: CallbackQuery):
     except Exception:
         log.exception("Could not notify account seller %s", uid)
     await c.answer("تمت مراجعة العرض.")
+
+BOT_PACKAGES = {
+    "basic": ("الباقة الأساسية", 3000, "بوت متجر جاهز بالهوية الأساسية وقائمة خدمات وطلبات العملاء"),
+    "pro": ("الباقة الاحترافية", 6000, "كل مميزات الأساسية مع لوحة إدارة وإدارة الطلبات والعملاء"),
+    "vip": ("باقة VIP", 10000, "تخصيص متقدم للمتجر ومزايا إضافية حسب الاتفاق")
+}
+
+async def on_botstore(c: CallbackQuery):
+    rows = [
+        [InlineKeyboardButton(text="🥉 الأساسية — 3,000 جنيه", callback_data="botpackage:basic")],
+        [InlineKeyboardButton(text="🥈 الاحترافية — 6,000 جنيه", callback_data="botpackage:pro")],
+        [InlineKeyboardButton(text="🥇 VIP — 10,000 جنيه", callback_data="botpackage:vip")]
+    ]
+    await c.message.answer(
+        "🤖 خدمات تصميم وبيع بوتات المتاجر من HAMO STORE\\n\\n"
+        "اختار الباقة المناسبة، وبعدها هنجمع بيانات طلبك ونتواصل معاك لتأكيد التفاصيل والسعر النهائي.",
+        reply_markup=with_cancel(rows)
+    )
+    await c.answer()
+
+async def on_bot_package(c: CallbackQuery):
+    key = c.data.split(":", 1)[1]
+    package = BOT_PACKAGES.get(key)
+    if not package:
+        await c.answer("الباقة غير متاحة.", show_alert=True)
+        return
+    pending[c.from_user.id] = {"step": "botstore_name", "package": key}
+    await c.message.answer(
+        f"✅ اخترت {package[0]} بسعر مبدئي {package[1]:,} جنيه.\\n"
+        f"{package[2]}\\n\\n"
+        "اكتب اسمك أو اسم المتجر:",
+        reply_markup=cancel_markup()
+    )
+    await c.answer()
 
 async def on_support(c: CallbackQuery):
     support_mode.add(c.from_user.id)
@@ -535,6 +570,32 @@ async def on_text(m: Message):
     data = pending.get(uid)
     if data:
         step = data.get("step")
+        if step == "botstore_name":
+            data["customer_name"] = txt[:100]
+            data["step"] = "botstore_type"
+            await m.answer("اكتب نوع المتجر أو النشاط الذي تريد البوت له:")
+            return
+        if step == "botstore_type":
+            data["store_type"] = txt[:300]
+            data["step"] = "botstore_features"
+            await m.answer("اكتب أهم الوظائف التي تحتاجها في البوت، أو اكتب: اقترح عليّ")
+            return
+        if step == "botstore_features":
+            package = BOT_PACKAGES[data["package"]]
+            details = (
+                f"🤖 طلب بوت متجر جديد\\n"
+                f"الباقة: {package[0]}\\nالسعر المبدئي: {package[1]:,} جنيه\\n"
+                f"العميل: {data['customer_name']}\\n"
+                f"النشاط: {data['store_type']}\\n"
+                f"المطلوب: {txt[:1000]}\\n"
+                f"Telegram ID: {uid}\\nUsername: @{m.from_user.username or 'غير متوفر'}"
+            )
+            await notify_admins(m.bot, details, reply_markup=kb([
+                [InlineKeyboardButton(text="📩 التواصل مع العميل", callback_data=f"reply:{uid}")]
+            ]))
+            pending.pop(uid, None)
+            await m.answer("✅ وصل طلبك للإدارة بنجاح. هنتواصل معاك على تيليجرام لتأكيد التفاصيل والاتفاق على التنفيذ.")
+            return
         if step == "new_product_category" and is_admin(uid):
             category = txt.strip().lower()
             if category not in ("tiktok", "pubg"):
@@ -859,6 +920,8 @@ async def main():
     dp.callback_query.register(on_buy, F.data.startswith("buy:"))
     dp.callback_query.register(on_accounts, F.data.startswith("accounts:"))
     dp.callback_query.register(on_sell_account, F.data == "sellaccount")
+    dp.callback_query.register(on_botstore, F.data == "botstore")
+    dp.callback_query.register(on_bot_package, F.data.startswith("botpackage:"))
     dp.callback_query.register(on_sell_submission_review, F.data.startswith(("sellapprove:", "sellreject:")))
     dp.callback_query.register(on_buy_account, F.data.startswith("buyacc:"))
     dp.callback_query.register(on_support, F.data == "support")
