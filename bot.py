@@ -266,7 +266,7 @@ async def on_botstore(c: CallbackQuery):
         [InlineKeyboardButton(text="🥇 VIP — 10,000 جنيه", callback_data="botpackage:vip")]
     ]
     await c.message.answer(
-        "🤖 خدمات تصميم وبيع بوتات المتاجر من HAMO STORE\\n\\n"
+        "🤖 خدمات تصميم وبيع بوتات المتاجر من HAMO STORE\n\n"
         "اختار الباقة المناسبة، وبعدها هنجمع بيانات طلبك ونتواصل معاك لتأكيد التفاصيل والسعر النهائي.",
         reply_markup=with_cancel(rows)
     )
@@ -280,8 +280,8 @@ async def on_bot_package(c: CallbackQuery):
         return
     pending[c.from_user.id] = {"step": "botstore_name", "package": key}
     await c.message.answer(
-        f"✅ اخترت {package[0]} بسعر مبدئي {package[1]:,} جنيه.\\n"
-        f"{package[2]}\\n\\n"
+        f"✅ اخترت {package[0]} بسعر مبدئي {package[1]:,} جنيه.\n"
+        f"{package[2]}\n\n"
         "اكتب اسمك أو اسم المتجر:",
         reply_markup=cancel_markup()
     )
@@ -583,12 +583,12 @@ async def on_text(m: Message):
         if step == "botstore_features":
             package = BOT_PACKAGES[data["package"]]
             details = (
-                f"🤖 طلب بوت متجر جديد\\n"
-                f"الباقة: {package[0]}\\nالسعر المبدئي: {package[1]:,} جنيه\\n"
-                f"العميل: {data['customer_name']}\\n"
-                f"النشاط: {data['store_type']}\\n"
-                f"المطلوب: {txt[:1000]}\\n"
-                f"Telegram ID: {uid}\\nUsername: @{m.from_user.username or 'غير متوفر'}"
+                f"🤖 طلب بوت متجر جديد\n"
+                f"الباقة: {package[0]}\nالسعر المبدئي: {package[1]:,} جنيه\n"
+                f"العميل: {data['customer_name']}\n"
+                f"النشاط: {data['store_type']}\n"
+                f"المطلوب: {txt[:1000]}\n"
+                f"Telegram ID: {uid}\nUsername: @{m.from_user.username or 'غير متوفر'}"
             )
             await notify_admins(m.bot, details, reply_markup=kb([
                 [InlineKeyboardButton(text="📩 التواصل مع العميل", callback_data=f"reply:{uid}")]
